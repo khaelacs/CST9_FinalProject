@@ -450,7 +450,7 @@ def extract_url_features(url):
             url.count("_"),
 
         "https_token":
-            1 if "https" in hostname_lower else 0,
+            1 if parsed.scheme.lower() == "https" else 0,
 
         "nb_subdomains":
             nb_subdomains
