@@ -6,3 +6,5 @@ joblib
 requests
 beautifulsoup4
 python-whois
+tldextract
+tranco
