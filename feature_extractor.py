@@ -323,29 +323,18 @@ def extract_url_features(url):
     #
     # --------------------------------------------------------
 
+    # Match the public dataset's documented phishing-hint vocabulary.
     phishing_terms = [
-        "login",
-        "signin",
-        "sign-in",
-        "verify",
-        "verification",
-        "account",
-        "secure",
-        "update",
-        "password",
-        "confirm",
-        "banking",
-        "wallet",
-        "authenticate"
+        "wp", "login", "includes", "content", "site", "admin",
+        "images", "js", "alibaba", "css", "myaccount", "dropbox",
+        "themes", "plugins", "signin", "view"
     ]
 
-    phish_hints = 0
-
-    for term in phishing_terms:
-
-        if term in url_lower:
-
-            phish_hints += 1
+    # Count occurrences, not just unique matched terms.
+    phish_hints = sum(
+        url_lower.count(term)
+        for term in phishing_terms
+    )
 
     # --------------------------------------------------------
     # DOMAIN IN BRAND
@@ -642,12 +631,13 @@ def extract_webpage_features(
             / total_links
         )
 
+        # The training dataset stores safe_anchor on a 0-100 scale.
         features[
             "safe_anchor"
         ] = (
             safe_links
             / total_links
-        )
+        ) * 100
 
     # ========================================================
     # TITLE
@@ -785,19 +775,20 @@ def extract_webpage_features(
 
     if total_media > 0:
 
+        # The training dataset stores media ratios on a 0-100 scale.
         features[
             "ratio_intMedia"
         ] = (
             internal_media
             / total_media
-        )
+        ) * 100
 
         features[
             "ratio_extMedia"
         ] = (
             external_media
             / total_media
-        )
+        ) * 100
 
     # ========================================================
     # EXTERNAL CSS
@@ -1428,6 +1419,17 @@ def extract_features(url):
         feature: features[feature]
         for feature in SELECTED_FEATURES
     }
+
+    # Final sanity check: the Random Forest expects numeric values.
+    for feature, value in final_features.items():
+        if value is None:
+            raise ValueError(f"Feature '{feature}' is None.")
+        try:
+            final_features[feature] = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Feature '{feature}' is not numeric: {value!r}"
+            )
 
     print(
         "Total features extracted:",
