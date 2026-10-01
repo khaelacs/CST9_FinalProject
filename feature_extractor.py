@@ -1,15 +1,11 @@
 import re
 import os
 import ipaddress
-from datetime import datetime, timezone
 from urllib.parse import urlparse, urljoin
 
 import requests
-import whois
 import tldextract
-
 from bs4 import BeautifulSoup
-from tranco import Tranco
 
 
 # ============================================================
@@ -28,50 +24,50 @@ HEADERS = {
 
 
 # ============================================================
-# EXACT 40 FEATURES USED BY YOUR RANDOM FOREST
+# EXACT 40 FEATURES USED BY RANDOM FOREST
 # ============================================================
 
 SELECTED_FEATURES = [
-    "google_index",
-    "page_rank",
     "nb_hyperlinks",
-    "web_traffic",
     "nb_www",
-    "domain_age",
+    "phish_hints",
     "ratio_extHyperlinks",
-    "safe_anchor",
-    "length_url",
     "ratio_intHyperlinks",
     "longest_words_raw",
-    "phish_hints",
+    "safe_anchor",
+    "length_url",
     "length_hostname",
-    "char_repeat",
-    "domain_in_title",
-    "shortest_word_path",
     "ratio_extRedirection",
-    "domain_registration_length",
-    "ratio_digits_host",
-    "nb_slash",
+    "char_repeat",
     "nb_dots",
+    "nb_slash",
     "shortest_word_host",
+    "ratio_digits_host",
+    "shortest_word_path",
+    "domain_with_copyright",
+    "domain_in_title",
     "ip",
+    "longest_word_host",
     "nb_hyphens",
     "shortest_words_raw",
-    "longest_word_host",
-    "nb_qm",
-    "domain_with_copyright",
-    "ratio_extMedia",
-    "ratio_extErrors",
     "ratio_intMedia",
-    "nb_extCSS",
-    "nb_subdomains",
-    "nb_redirection",
+    "ratio_extErrors",
     "domain_in_brand",
-    "nb_and",
+    "nb_qm",
+    "ratio_extMedia",
+    "nb_subdomains",
+    "nb_extCSS",
+    "nb_redirection",
     "nb_underscore",
+    "empty_title",
+    "prefix_suffix",
     "https_token",
     "external_favicon",
-    "empty_title"
+    "shortening_service",
+    "random_domain",
+    "login_form",
+    "nb_com",
+    "tld_in_subdomain"
 ]
 
 
@@ -94,15 +90,12 @@ def get_url_information(url):
     parsed = urlparse(url)
 
     hostname = parsed.hostname or ""
-
     hostname = hostname.lower()
 
     extracted = tldextract.extract(url)
 
     domain = extracted.domain or ""
-
     suffix = extracted.suffix or ""
-
     subdomain = extracted.subdomain or ""
 
     if domain and suffix:
@@ -115,7 +108,8 @@ def get_url_information(url):
         hostname,
         registered_domain,
         domain,
-        subdomain
+        subdomain,
+        suffix
     )
 
 
@@ -171,19 +165,18 @@ def extract_url_features(url):
         hostname,
         registered_domain,
         domain,
-        subdomain
+        subdomain,
+        suffix
     ) = get_url_information(url)
 
     path = parsed.path or ""
-
     query = parsed.query or ""
 
     url_lower = url.lower()
-
     hostname_lower = hostname.lower()
 
     # --------------------------------------------------------
-    # URL WORDS
+    # WORDS
     # --------------------------------------------------------
 
     raw_words = (
@@ -199,10 +192,6 @@ def extract_url_features(url):
     )
 
     path_words = split_words(path)
-
-    # --------------------------------------------------------
-    # WORD LENGTHS
-    # --------------------------------------------------------
 
     raw_lengths = [
         len(word)
@@ -256,10 +245,12 @@ def extract_url_features(url):
     ip = 0
 
     try:
+
         ipaddress.ip_address(hostname)
         ip = 1
 
     except ValueError:
+
         ip = 0
 
     # --------------------------------------------------------
@@ -271,7 +262,7 @@ def extract_url_features(url):
         for character in hostname
     )
 
-    if len(hostname) > 0:
+    if hostname:
 
         ratio_digits_host = (
             digit_count / len(hostname)
@@ -289,11 +280,11 @@ def extract_url_features(url):
 
         nb_subdomains = len(
             subdomain.split(".")
-        )
+        ) + 1
 
     else:
 
-        nb_subdomains = 0
+        nb_subdomains = 1
 
     # --------------------------------------------------------
     # CHARACTER REPETITION
@@ -303,9 +294,7 @@ def extract_url_features(url):
 
     for word in raw_words:
 
-        for i in range(
-            len(word) - 1
-        ):
+        for i in range(len(word) - 1):
 
             if word[i] == word[i + 1]:
 
@@ -314,35 +303,33 @@ def extract_url_features(url):
     # --------------------------------------------------------
     # PHISHING HINTS
     # --------------------------------------------------------
-    #
-    # IMPORTANT:
-    # This does NOT classify the website.
-    #
-    # It only calculates a numerical feature.
-    # The Random Forest makes the final decision.
-    #
-    # --------------------------------------------------------
 
-    # Match the public dataset's documented phishing-hint vocabulary.
     phishing_terms = [
-        "wp", "login", "includes", "content", "site", "admin",
-        "images", "js", "alibaba", "css", "myaccount", "dropbox",
-        "themes", "plugins", "signin", "view"
+        "login",
+        "signin",
+        "sign-in",
+        "verify",
+        "verification",
+        "account",
+        "secure",
+        "update",
+        "password",
+        "confirm",
+        "banking",
+        "wallet",
+        "authenticate"
     ]
 
-    # Count occurrences, not just unique matched terms.
-    phish_hints = sum(
-        url_lower.count(term)
-        for term in phishing_terms
-    )
+    phish_hints = 0
+
+    for term in phishing_terms:
+
+        if term in url_lower:
+
+            phish_hints += 1
 
     # --------------------------------------------------------
     # DOMAIN IN BRAND
-    # --------------------------------------------------------
-    #
-    # Again, this ONLY creates a feature.
-    # It does NOT say phishing.
-    #
     # --------------------------------------------------------
 
     brands = [
@@ -387,7 +374,119 @@ def extract_url_features(url):
             break
 
     # --------------------------------------------------------
-    # RETURN URL FEATURES
+    # PREFIX / SUFFIX
+    # --------------------------------------------------------
+
+    prefix_suffix = 0
+
+    if "-" in domain:
+
+        prefix_suffix = 1
+
+    # --------------------------------------------------------
+    # HTTPS TOKEN
+    # --------------------------------------------------------
+
+    https_token = (
+        1
+        if parsed.scheme.lower() == "https"
+        else 0
+    )
+
+    # --------------------------------------------------------
+    # URL SHORTENING SERVICE
+    # --------------------------------------------------------
+
+    shortening_services = [
+        "bit.ly",
+        "tinyurl.com",
+        "goo.gl",
+        "t.co",
+        "ow.ly",
+        "is.gd",
+        "buff.ly",
+        "adf.ly",
+        "bit.do",
+        "cutt.ly",
+        "shorturl.at",
+        "tiny.cc",
+        "lnkd.in",
+        "rebrand.ly",
+        "trib.al"
+    ]
+
+    shortening_service = 0
+
+    for service in shortening_services:
+
+        if hostname == service or hostname.endswith(
+            "." + service
+        ):
+
+            shortening_service = 1
+            break
+
+    # --------------------------------------------------------
+    # RANDOM DOMAIN
+    # --------------------------------------------------------
+    #
+    # Reconstructed approximation.
+    # This checks for a domain containing a high
+    # proportion of random-looking characters.
+    #
+    # --------------------------------------------------------
+
+    random_domain = 0
+
+    if domain:
+
+        letters = re.findall(
+            r"[a-z]",
+            domain.lower()
+        )
+
+        if len(letters) >= 6:
+
+            vowel_count = sum(
+                char in "aeiou"
+                for char in letters
+            )
+
+            vowel_ratio = (
+                vowel_count / len(letters)
+            )
+
+            if vowel_ratio < 0.15:
+
+                random_domain = 1
+
+    # --------------------------------------------------------
+    # NUMBER OF ".COM"
+    # --------------------------------------------------------
+
+    nb_com = url_lower.count(".com")
+
+    # --------------------------------------------------------
+    # TLD IN SUBDOMAIN
+    # --------------------------------------------------------
+
+    tld_in_subdomain = 0
+
+    if subdomain and suffix:
+
+        suffix_parts = suffix.lower().split(".")
+
+        subdomain_lower = subdomain.lower()
+
+        for tld_part in suffix_parts:
+
+            if tld_part in subdomain_lower.split("."):
+
+                tld_in_subdomain = 1
+                break
+
+    # --------------------------------------------------------
+    # RETURN
     # --------------------------------------------------------
 
     return {
@@ -443,22 +542,34 @@ def extract_url_features(url):
         "domain_in_brand":
             domain_in_brand,
 
-        "nb_and":
-            url.count("&"),
-
         "nb_underscore":
             url.count("_"),
 
         "https_token":
-            1 if parsed.scheme.lower() == "https" else 0,
+            https_token,
 
         "nb_subdomains":
-            nb_subdomains
+            nb_subdomains,
+
+        "prefix_suffix":
+            prefix_suffix,
+
+        "shortening_service":
+            shortening_service,
+
+        "random_domain":
+            random_domain,
+
+        "nb_com":
+            nb_com,
+
+        "tld_in_subdomain":
+            tld_in_subdomain
     }
 
 
 # ============================================================
-# 2. DOWNLOAD THE WEBPAGE
+# 2. DOWNLOAD WEBPAGE
 # ============================================================
 
 def get_webpage(url):
@@ -498,10 +609,10 @@ def extract_webpage_features(
         hostname,
         registered_domain,
         domain,
-        subdomain
+        subdomain,
+        suffix
     ) = get_url_information(url)
 
-    # Default values
     features = {
 
         "nb_hyperlinks": 0,
@@ -530,7 +641,9 @@ def extract_webpage_features(
 
         "external_favicon": 0,
 
-        "empty_title": 1
+        "empty_title": 1,
+
+        "login_form": 0
     }
 
     if response is None:
@@ -549,12 +662,10 @@ def extract_webpage_features(
         return features
 
     # ========================================================
-    # REDIRECTS
+    # REDIRECTION
     # ========================================================
 
-    features[
-        "nb_redirection"
-    ] = len(
+    features["nb_redirection"] = len(
         response.history
     )
 
@@ -574,6 +685,8 @@ def extract_webpage_features(
 
     safe_links = 0
 
+    external_urls = []
+
     for anchor in anchors:
 
         href = (
@@ -584,21 +697,27 @@ def extract_webpage_features(
         if not href:
             continue
 
-        # Safe usable links
-        if not href.startswith(
-            (
-                "#",
-                "javascript:",
-                "mailto:"
-            )
-        ):
-
-            safe_links += 1
-
         full_url = urljoin(
             url,
             href
         )
+
+        # ----------------------------------------------------
+        # SAFE ANCHOR
+        # ----------------------------------------------------
+
+        if href not in [
+            "#",
+            "",
+            "javascript:void(0)",
+            "javascript:void(0);"
+        ]:
+
+            safe_links += 1
+
+        # ----------------------------------------------------
+        # INTERNAL / EXTERNAL
+        # ----------------------------------------------------
 
         if is_internal_url(
             full_url,
@@ -611,32 +730,25 @@ def extract_webpage_features(
 
             external_links += 1
 
-    features[
-        "nb_hyperlinks"
-    ] = total_links
+            external_urls.append(
+                full_url
+            )
+
+    features["nb_hyperlinks"] = total_links
 
     if total_links > 0:
 
-        features[
-            "ratio_intHyperlinks"
-        ] = (
-            internal_links
-            / total_links
+        features["ratio_intHyperlinks"] = (
+            internal_links / total_links
         )
 
-        features[
-            "ratio_extHyperlinks"
-        ] = (
-            external_links
-            / total_links
+        features["ratio_extHyperlinks"] = (
+            external_links / total_links
         )
 
-        # The training dataset stores safe_anchor on a 0-100 scale.
-        features[
-            "safe_anchor"
-        ] = (
-            safe_links
-            / total_links
+        # Dataset uses percentage scale.
+        features["safe_anchor"] = (
+            safe_links / total_links
         ) * 100
 
     # ========================================================
@@ -658,21 +770,15 @@ def extract_webpage_features(
 
     if title:
 
-        features[
-            "empty_title"
-        ] = 0
+        features["empty_title"] = 0
 
         if domain.lower() in title.lower():
 
-            features[
-                "domain_in_title"
-            ] = 1
+            features["domain_in_title"] = 1
 
     else:
 
-        features[
-            "empty_title"
-        ] = 1
+        features["empty_title"] = 1
 
     # ========================================================
     # COPYRIGHT
@@ -683,9 +789,7 @@ def extract_webpage_features(
         strip=True
     )
 
-    page_text_lower = (
-        page_text.lower()
-    )
+    page_text_lower = page_text.lower()
 
     copyright_position = (
         page_text_lower.find(
@@ -745,9 +849,7 @@ def extract_webpage_features(
 
     for tag in media_tags:
 
-        source = tag.get(
-            "src"
-        )
+        source = tag.get("src")
 
         if not source:
             continue
@@ -775,19 +877,13 @@ def extract_webpage_features(
 
     if total_media > 0:
 
-        # The training dataset stores media ratios on a 0-100 scale.
-        features[
-            "ratio_intMedia"
-        ] = (
-            internal_media
-            / total_media
+        # Dataset uses percentage scale.
+        features["ratio_intMedia"] = (
+            internal_media / total_media
         ) * 100
 
-        features[
-            "ratio_extMedia"
-        ] = (
-            external_media
-            / total_media
+        features["ratio_extMedia"] = (
+            external_media / total_media
         ) * 100
 
     # ========================================================
@@ -814,7 +910,6 @@ def extract_webpage_features(
         ]
 
         if "stylesheet" not in rel:
-
             continue
 
         css_url = urljoin(
@@ -829,9 +924,7 @@ def extract_webpage_features(
 
             external_css += 1
 
-    features[
-        "nb_extCSS"
-    ] = external_css
+    features["nb_extCSS"] = external_css
 
     # ========================================================
     # FAVICON
@@ -887,12 +980,14 @@ def extract_webpage_features(
             or ""
         ).lower()
 
-        if (
-            redirect_host
-            and redirect_host != hostname
-        ):
+        if redirect_host:
 
-            external_redirects += 1
+            if not is_internal_url(
+                redirect.url,
+                hostname
+            ):
+
+                external_redirects += 1
 
     if len(response.history) > 0:
 
@@ -907,39 +1002,9 @@ def extract_webpage_features(
     # EXTERNAL LINK ERRORS
     # ========================================================
 
-    external_urls = []
-
-    for anchor in anchors:
-
-        href = anchor.get(
-            "href"
-        )
-
-        if not href:
-            continue
-
-        full_url = urljoin(
-            url,
-            href
-        )
-
-        if not is_internal_url(
-            full_url,
-            hostname
-        ):
-
-            external_urls.append(
-                full_url
-            )
-
-    # Check only a few URLs so the
-    # application does not become too slow.
-
-    check_urls = external_urls[:5]
-
     error_count = 0
 
-    for external_url in check_urls:
+    for external_url in external_urls:
 
         try:
 
@@ -958,346 +1023,73 @@ def extract_webpage_features(
 
             error_count += 1
 
-    if check_urls:
+    if external_urls:
 
         features[
             "ratio_extErrors"
         ] = (
             error_count
-            / len(check_urls)
+            / len(external_urls)
         )
+
+    # ========================================================
+    # LOGIN FORM
+    # ========================================================
+
+    forms = soup.find_all("form")
+
+    for form in forms:
+
+        form_text = (
+            form.get_text(
+                " ",
+                strip=True
+            ).lower()
+        )
+
+        form_html = str(
+            form
+        ).lower()
+
+        login_keywords = [
+            "login",
+            "log in",
+            "signin",
+            "sign in",
+            "password",
+            "username",
+            "email"
+        ]
+
+        found_keyword = any(
+            keyword in form_text
+            or keyword in form_html
+            for keyword in login_keywords
+        )
+
+        password_input = form.find(
+            "input",
+            {
+                "type": "password"
+            }
+        )
+
+        if found_keyword or password_input:
+
+            features["login_form"] = 1
+            break
 
     return features
 
 
 # ============================================================
-# 4. WHOIS FEATURES
-# ============================================================
-#
-# These two are automatically obtained from the domain.
-# They are NOT classification rules.
-#
-# ============================================================
-
-def get_date(value):
-
-    if value is None:
-        return None
-
-    if isinstance(value, list):
-
-        values = [
-            item
-            for item in value
-            if isinstance(
-                item,
-                datetime
-            )
-        ]
-
-        if not values:
-            return None
-
-        value = values[0]
-
-    if not isinstance(
-        value,
-        datetime
-    ):
-
-        return None
-
-    if value.tzinfo is None:
-
-        value = value.replace(
-            tzinfo=timezone.utc
-        )
-
-    return value
-
-
-def extract_whois_features(
-    registered_domain
-):
-
-    domain_age = -1
-
-    domain_registration_length = -1
-
-    try:
-
-        information = whois.whois(
-            registered_domain
-        )
-
-        creation_date = get_date(
-            information.creation_date
-        )
-
-        expiration_date = get_date(
-            information.expiration_date
-        )
-
-        now = datetime.now(
-            timezone.utc
-        )
-
-        # Domain age
-        if creation_date:
-
-            domain_age = max(
-                0,
-                (
-                    now - creation_date
-                ).days
-            )
-
-        # Registration length
-        if (
-            creation_date
-            and expiration_date
-        ):
-
-            domain_registration_length = max(
-                0,
-                (
-                    expiration_date
-                    - creation_date
-                ).days
-            )
-
-    except Exception as error:
-
-        print(
-            "WHOIS unavailable:",
-            error
-        )
-
-    return {
-        "domain_age":
-            domain_age,
-
-        "domain_registration_length":
-            domain_registration_length
-    }
-
-
-# ============================================================
-# 5. EXTERNAL FEATURE #1
-# GOOGLE INDEX
-# ============================================================
-
-def get_secret(name):
-
-    # Streamlit Cloud
-    try:
-
-        import streamlit as st
-
-        value = st.secrets.get(
-            name,
-            None
-        )
-
-        if value:
-            return value
-
-    except Exception:
-        pass
-
-    # Local environment
-    return os.getenv(name)
-
-
-def extract_google_index(
-    registered_domain
-):
-
-    api_key = get_secret(
-        "SERPER_API_KEY"
-    )
-
-    if not api_key:
-
-        raise RuntimeError(
-            "SERPER_API_KEY is not configured."
-        )
-
-    response = requests.post(
-        "https://google.serper.dev/search",
-
-        headers={
-            "X-API-KEY": api_key,
-            "Content-Type":
-                "application/json"
-        },
-
-        json={
-            "q":
-                f"site:{registered_domain}",
-            "num": 1
-        },
-
-        timeout=15
-    )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    results = data.get(
-        "organic",
-        []
-    )
-
-    # IMPORTANT:
-    # This only creates the google_index feature.
-    # It does not classify the URL.
-
-    if len(results) > 0:
-
-        return 1
-
-    return 0
-
-
-# ============================================================
-# 6. EXTERNAL FEATURE #2
-# PAGE RANK
-# ============================================================
-
-def extract_page_rank(
-    registered_domain
-):
-
-    api_key = get_secret(
-        "OPENPAGERANK_API_KEY"
-    )
-
-    if not api_key:
-
-        raise RuntimeError(
-            "OPENPAGERANK_API_KEY is not configured."
-        )
-
-    response = requests.post(
-
-        "https://openpagerank.keywordseverywhere.com"
-        "/v1/domains/bulk",
-
-        headers={
-            "Authorization":
-                f"Bearer {api_key}",
-
-            "Content-Type":
-                "application/json"
-        },
-
-        json={
-            "domains": [
-                registered_domain
-            ],
-
-            "include_history": False
-        },
-
-        timeout=15
-    )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    results = data.get(
-        "results",
-        []
-    )
-
-    if not results:
-
-        return 0
-
-    result = results[0]
-
-    if not result.get(
-        "found",
-        False
-    ):
-
-        return 0
-
-    # OpenPageRank gives a 0–10 score.
-    #
-    # Your training dataset uses page_rank
-    # as a 0–10 feature.
-    #
-    # We round to an integer so the live
-    # feature has the same general scale.
-
-    page_rank = result.get(
-        "open_page_rank",
-        0
-    )
-
-    if page_rank is None:
-
-        return 0
-
-    return round(
-        float(page_rank)
-    )
-
-
-# ============================================================
-# 7. EXTERNAL FEATURE #3
-# WEB TRAFFIC
-# ============================================================
-
-def extract_web_traffic(
-    registered_domain
-):
-
-    try:
-
-        tranco = Tranco(
-            cache=True,
-            cache_dir=".tranco"
-        )
-
-        latest_list = tranco.list()
-
-        rank = latest_list.rank(
-            registered_domain
-        )
-
-        # Tranco returns -1 when the
-        # domain is not found.
-
-        if rank == -1:
-
-            return 0
-
-        return int(rank)
-
-    except Exception as error:
-
-        print(
-            "Tranco error:",
-            error
-        )
-
-        return 0
-
-
-# ============================================================
-# 8. MAIN FEATURE EXTRACTION
+# 4. MAIN FEATURE EXTRACTION
 # ============================================================
 
 def extract_features(url):
 
     # --------------------------------------------------------
-    # STEP 1
-    # Normalize URL
+    # STEP 1: Normalize URL
     # --------------------------------------------------------
 
     url = normalize_url(url)
@@ -1308,8 +1100,7 @@ def extract_features(url):
     )
 
     # --------------------------------------------------------
-    # STEP 2
-    # Extract URL-based features
+    # STEP 2: URL FEATURES
     # --------------------------------------------------------
 
     features = extract_url_features(
@@ -1317,21 +1108,7 @@ def extract_features(url):
     )
 
     # --------------------------------------------------------
-    # STEP 3
-    # Get domain information
-    # --------------------------------------------------------
-
-    (
-        parsed,
-        hostname,
-        registered_domain,
-        domain,
-        subdomain
-    ) = get_url_information(url)
-
-    # --------------------------------------------------------
-    # STEP 4
-    # Download webpage
+    # STEP 3: WEBPAGE
     # --------------------------------------------------------
 
     response = get_webpage(
@@ -1339,8 +1116,7 @@ def extract_features(url):
     )
 
     # --------------------------------------------------------
-    # STEP 5
-    # Extract HTML/webpage features
+    # STEP 4: HTML FEATURES
     # --------------------------------------------------------
 
     webpage_features = (
@@ -1355,46 +1131,7 @@ def extract_features(url):
     )
 
     # --------------------------------------------------------
-    # STEP 6
-    # WHOIS
-    # --------------------------------------------------------
-
-    whois_features = (
-        extract_whois_features(
-            registered_domain
-        )
-    )
-
-    features.update(
-        whois_features
-    )
-
-    # --------------------------------------------------------
-    # STEP 7
-    # THREE LIVE EXTERNAL FEATURES
-    # --------------------------------------------------------
-
-    features[
-        "google_index"
-    ] = extract_google_index(
-        registered_domain
-    )
-
-    features[
-        "page_rank"
-    ] = extract_page_rank(
-        registered_domain
-    )
-
-    features[
-        "web_traffic"
-    ] = extract_web_traffic(
-        registered_domain
-    )
-
-    # --------------------------------------------------------
-    # STEP 8
-    # CHECK THAT ALL 40 FEATURES EXIST
+    # STEP 5: CHECK ALL 40 FEATURES
     # --------------------------------------------------------
 
     missing = [
@@ -1411,25 +1148,13 @@ def extract_features(url):
         )
 
     # --------------------------------------------------------
-    # STEP 9
-    # RETURN EXACTLY THE 40 FEATURES
+    # STEP 6: RETURN EXACTLY 40 FEATURES
     # --------------------------------------------------------
 
     final_features = {
         feature: features[feature]
         for feature in SELECTED_FEATURES
     }
-
-    # Final sanity check: the Random Forest expects numeric values.
-    for feature, value in final_features.items():
-        if value is None:
-            raise ValueError(f"Feature '{feature}' is None.")
-        try:
-            final_features[feature] = float(value)
-        except (TypeError, ValueError):
-            raise ValueError(
-                f"Feature '{feature}' is not numeric: {value!r}"
-            )
 
     print(
         "Total features extracted:",
