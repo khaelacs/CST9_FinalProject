@@ -278,9 +278,7 @@ st.markdown(
 
 st.write(
     """
-    Enter a website URL below. The system extracts the same
-    features used during training and sends them to the trained
-    Random Forest model.
+    Enter a website URL below.
     """
 )
 
