@@ -1,75 +1,87 @@
 import re
-import socket
-import ipaddress
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from urllib.parse import urlparse
 
-import requests
 import tldextract
-from bs4 import BeautifulSoup
 
 
 # ============================================================
-# SETTINGS
+# FINAL URL-ONLY FEATURE EXTRACTOR
+# Dataset basis:
+# Hannousse & Yahiouche (2020)
+# "Web page phishing detection", Mendeley Data V2
+#
+# This extractor calculates ONLY the 43 URL-based features
+# selected by the final Random Forest model.
+#
+# IMPORTANT:
+# - It does NOT download webpages.
+# - It does NOT make a phishing/legitimate decision.
+# - Prediction must remain inside app.py using the trained model.
 # ============================================================
 
-CONNECT_TIMEOUT = 3
-READ_TIMEOUT = 6
-DNS_TIMEOUT = 2
-MAX_REDIRECTS = 3
-MAX_HTML_BYTES = 3 * 1024 * 1024
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0 Safari/537.36"
-    )
-}
-
-_TLD = tldextract.TLDExtract(
+# Use tldextract without downloading the Public Suffix List at runtime.
+_TLD_EXTRACT = tldextract.TLDExtract(
     suffix_list_urls=None
 )
 
 
 # ============================================================
-# EXACT 25 FEATURES USED BY FINAL MODEL
+# EXACT 43 FEATURES USED BY THE FINAL MODEL
 # ============================================================
 
 SELECTED_FEATURES = [
-    "nb_hyperlinks",
     "phish_hints",
-    "nb_www",
-    "safe_anchor",
-    "ratio_extHyperlinks",
     "longest_words_raw",
-    "ratio_intHyperlinks",
+    "nb_www",
     "length_url",
+    "length_hostname",
     "shortest_word_host",
     "nb_slash",
-    "length_hostname",
-    "domain_in_title",
-    "char_repeat",
-    "shortest_word_path",
-    "longest_word_host",
     "nb_hyphens",
-    "domain_with_copyright",
-    "nb_dots",
+    "char_repeat",
+    "longest_word_host",
+    "shortest_word_path",
     "ratio_digits_host",
+    "nb_dots",
     "shortest_words_raw",
-    "ratio_intMedia",
     "domain_in_brand",
-    "ratio_extMedia",
-    "ip",
     "nb_qm",
+    "nb_underscore",
+    "ip",
+    "https_token",
+    "nb_subdomains",
+    "prefix_suffix",
+    "suspecious_tld",
+    "shortening_service",
+    "nb_com",
+    "nb_and",
+    "tld_in_path",
+    "nb_percent",
+    "nb_space",
+    "tld_in_subdomain",
+    "nb_at",
+    "nb_semicolumn",
+    "nb_tilde",
+    "nb_colon",
+    "http_in_path",
+    "nb_dslash",
+    "brand_in_subdomain",
+    "brand_in_path",
+    "nb_comma",
+    "port",
+    "path_extension",
+    "punycode",
+    "nb_star",
+    "nb_dollar",
 ]
 
 
 # ============================================================
-# REFERENCE VALUES
+# ORIGINAL PHISH-HINT LIST
 # ============================================================
 
-PHISH_HINTS = (
+PHISH_HINTS = [
     "wp",
     "login",
     "includes",
@@ -86,95 +98,358 @@ PHISH_HINTS = (
     "plugins",
     "signin",
     "view",
+]
+
+
+# ============================================================
+# ORIGINAL SUSPICIOUS TLD LIST
+# Keep the original dataset spelling:
+# "suspecious_tld"
+# ============================================================
+
+SUSPECIOUS_TLDS = [
+    "fit",
+    "tk",
+    "gp",
+    "ga",
+    "work",
+    "ml",
+    "date",
+    "wang",
+    "men",
+    "icu",
+    "online",
+    "click",
+    "country",
+    "stream",
+    "download",
+    "xin",
+    "racing",
+    "jetzt",
+    "ren",
+    "mom",
+    "party",
+    "review",
+    "trade",
+    "accountants",
+    "science",
+    "work",
+    "ninja",
+    "xyz",
+    "faith",
+    "zip",
+    "cricket",
+    "win",
+    "accountant",
+    "realtor",
+    "top",
+    "christmas",
+    "gdn",
+    "link",
+    "asia",
+    "club",
+    "la",
+    "ae",
+    "exposed",
+    "pe",
+    "go.id",
+    "rs",
+    "k12.pa.us",
+    "or.kr",
+    "ce.ke",
+    "audio",
+    "gob.pe",
+    "gov.az",
+    "website",
+    "bj",
+    "mx",
+    "media",
+    "sa.gov.au",
+]
+
+
+# ============================================================
+# ORIGINAL URL SHORTENING REGEX
+# ============================================================
+
+SHORTENING_PATTERN = re.compile(
+    r"bit\.ly|goo\.gl|shorte\.st|go2l\.ink|x\.co|ow\.ly|t\.co|"
+    r"tinyurl|tr\.im|is\.gd|cli\.gs|yfrog\.com|migre\.me|ff\.im|"
+    r"tiny\.cc|url4\.eu|twit\.ac|su\.pr|twurl\.nl|snipurl\.com|"
+    r"short\.to|BudURL\.com|ping\.fm|post\.ly|Just\.as|bkite\.com|"
+    r"snipr\.com|fic\.kr|loopt\.us|doiop\.com|short\.ie|kl\.am|"
+    r"wp\.me|rubyurl\.com|om\.ly|to\.ly|bit\.do|t\.co|lnkd\.in|"
+    r"db\.tt|qr\.ae|adf\.ly|goo\.gl|bitly\.com|cur\.lv|"
+    r"tinyurl\.com|ow\.ly|bit\.ly|ity\.im|q\.gs|is\.gd|po\.st|"
+    r"bc\.vc|twitthis\.com|u\.to|j\.mp|buzurl\.com|cutt\.us|"
+    r"u\.bb|yourls\.org|x\.co|prettylinkpro\.com|scrnch\.me|"
+    r"filoops\.info|vzturl\.com|qr\.net|1url\.com|tweez\.me|"
+    r"v\.gd|tr\.im|link\.zip\.net"
 )
 
 
-BRANDS = {
+# ============================================================
+# ORIGINAL BRAND LIST
+# ============================================================
+
+ALL_BRANDS = {
+    "accenture",
+    "activisionblizzard",
     "adidas",
     "adobe",
+    "adultfriendfinder",
+    "agriculturalbankofchina",
+    "akamai",
     "alibaba",
     "aliexpress",
+    "alipay",
+    "alliance",
+    "alliancedata",
+    "allianceone",
+    "allianz",
+    "alphabet",
     "amazon",
+    "americanairlines",
     "americanexpress",
+    "americantower",
+    "andersons",
+    "apache",
     "apple",
+    "arrow",
+    "ashleymadison",
+    "audi",
+    "autodesk",
+    "avaya",
+    "avisbudget",
+    "avon",
+    "axa",
+    "badoo",
+    "baidu",
     "bankofamerica",
+    "bankofchina",
+    "bankofnewyorkmellon",
     "barclays",
+    "barnes",
     "bbc",
+    "bbt",
+    "bbva",
+    "bebo",
+    "benchmark",
     "bestbuy",
+    "bim",
     "bing",
+    "biogen",
+    "blackstone",
+    "blogger",
+    "blogspot",
     "bmw",
+    "bnpparibas",
+    "boeing",
     "booking",
+    "broadcom",
+    "burberry",
+    "caesars",
+    "canon",
+    "cardinalhealth",
+    "carmax",
+    "carters",
+    "caterpillar",
+    "cheesecakefactory",
+    "chinaconstructionbank",
+    "cinemark",
+    "cintas",
     "cisco",
     "citi",
     "citigroup",
+    "cnet",
+    "coca-cola",
+    "colgate",
+    "colgate-palmolive",
+    "columbiasportswear",
+    "commonwealth",
+    "communityhealth",
+    "continental",
     "dell",
+    "deltaairlines",
+    "deutschebank",
     "disney",
+    "dolby",
+    "dominos",
+    "donaldson",
+    "dreamworks",
     "dropbox",
+    "eastman",
+    "eastmankodak",
     "ebay",
+    "edison",
+    "electronicarts",
+    "equifax",
+    "equinix",
+    "expedia",
+    "express",
     "facebook",
     "fedex",
+    "flickr",
+    "footlocker",
     "ford",
+    "fordmotor",
+    "fossil",
+    "fosterwheeler",
+    "foxconn",
+    "fujitsu",
+    "gap",
+    "gartner",
+    "genesis",
+    "genuine",
+    "genworth",
+    "gigamedia",
+    "gillette",
     "github",
+    "global",
+    "globalpayments",
+    "goodyeartire",
     "google",
     "gucci",
+    "harley-davidson",
+    "harris",
+    "hewlettpackard",
+    "hilton",
+    "hiltonworldwide",
+    "hmstatil",
     "honda",
     "hsbc",
     "huawei",
+    "huntingtonbancshares",
+    "hyundai",
     "ibm",
     "ikea",
+    "imdb",
+    "imgur",
+    "ingbank",
+    "insight",
     "instagram",
     "intel",
+    "jackdaniels",
+    "jnj",
+    "jpmorgan",
+    "jpmorganchase",
+    "kelly",
+    "kfc",
+    "kindermorgan",
+    "lbrands",
+    "lego",
+    "lennox",
+    "lenovo",
+    "lindsay",
     "linkedin",
+    "livejasmin",
+    "loreal",
+    "louisvuitton",
     "mastercard",
+    "mcdonalds",
+    "mckesson",
+    "mckinsey",
+    "mercedes-benz",
     "microsoft",
+    "microsoftonline",
+    "mini",
+    "mitsubishi",
+    "morganstanley",
+    "motorola",
+    "mrcglobal",
+    "mtv",
+    "myspace",
+    "nescafe",
+    "nestle",
     "netflix",
     "nike",
     "nintendo",
     "nissan",
+    "nissanmotor",
+    "nvidia",
+    "nytimes",
     "oracle",
+    "panasonic",
     "paypal",
+    "pepsi",
+    "pepsico",
+    "philips",
     "pinterest",
+    "pocket",
+    "pornhub",
+    "porsche",
+    "prada",
+    "rabobank",
     "reddit",
+    "regal",
+    "royalbankofcanada",
     "samsung",
+    "scotiabank",
+    "shell",
+    "siemens",
     "skype",
     "snapchat",
     "sony",
+    "soundcloud",
+    "spiritairlines",
     "spotify",
+    "sprite",
+    "stackexchange",
+    "stackoverflow",
     "starbucks",
+    "swatch",
+    "swift",
+    "symantec",
+    "synaptics",
+    "target",
     "telegram",
     "tesla",
-    "tiktok",
+    "teslamotors",
+    "theguardian",
+    "homedepot",
+    "piratebay",
+    "tiffany",
+    "tinder",
+    "tmall",
     "toyota",
     "tripadvisor",
     "tumblr",
     "twitch",
     "twitter",
+    "underarmour",
+    "unilever",
+    "universal",
+    "ups",
+    "verizon",
+    "viber",
     "visa",
     "volkswagen",
+    "volvocars",
     "walmart",
     "wechat",
+    "weibo",
     "whatsapp",
     "wikipedia",
     "wordpress",
     "yahoo",
+    "yamaha",
+    "yandex",
     "youtube",
-}
-
-
-NULL_FORMAT = {
-    "",
-    "#",
-    "#nothing",
-    "#doesnotexist",
-    "#null",
-    "#void",
-    "#whatever",
-    "#content",
-    "javascript:void(0)",
-    "javascript:void(0);",
-    "javascript::void(0)",
-    "javascript::void(0);",
-    "javascript",
+    "zara",
+    "zebra",
+    "iphone",
+    "icloud",
+    "itunes",
+    "sinara",
+    "normshield",
+    "bga",
+    "sinaralabs",
+    "roksit",
+    "cybrml",
+    "turkcell",
+    "n11",
+    "hepsiburada",
+    "migros",
 }
 
 
@@ -187,263 +462,43 @@ class FeatureExtractionError(Exception):
 
 
 # ============================================================
-# NORMALIZE URL
+# BASIC URL NORMALIZATION
 # ============================================================
 
 def normalize_url(url):
+    """
+    Add a scheme only when the user omitted one.
+
+    The trained dataset contains complete URLs, so the application
+    should pass a complete URL into the extractor.
+    """
 
     url = str(url).strip()
 
     if not url:
-        raise FeatureExtractionError(
-            "Please enter a website URL."
-        )
+        raise FeatureExtractionError("Please enter a URL.")
 
     if not url.lower().startswith(
-        (
-            "http://",
-            "https://"
-        )
+        ("http://", "https://")
     ):
         url = "https://" + url
 
     parsed = urlparse(url)
 
     if not parsed.hostname:
-        raise FeatureExtractionError(
-            "Invalid website URL."
-        )
+        raise FeatureExtractionError("Invalid URL.")
 
     return url
 
 
 # ============================================================
-# PROTECT STREAMLIT SERVER FROM PRIVATE / LOCAL URLS
-# ============================================================
-
-def _is_private_ip(address):
-
-    ip = ipaddress.ip_address(
-        address
-    )
-
-    return (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified
-    )
-
-
-def _resolve_hostname(
-    hostname
-):
-
-    def lookup():
-
-        return socket.getaddrinfo(
-            hostname,
-            None
-        )
-
-    with ThreadPoolExecutor(
-        max_workers=1
-    ) as executor:
-
-        future = executor.submit(
-            lookup
-        )
-
-        try:
-
-            return future.result(
-                timeout=DNS_TIMEOUT
-            )
-
-        except TimeoutError as error:
-
-            raise FeatureExtractionError(
-                "DNS lookup timed out."
-            ) from error
-
-        except socket.gaierror as error:
-
-            raise FeatureExtractionError(
-                "Website hostname could not be resolved."
-            ) from error
-
-
-def _validate_public_url(
-    url
-):
-
-    parsed = urlparse(
-        url
-    )
-
-    hostname = (
-        parsed.hostname
-        or ""
-    ).lower()
-
-    if not hostname:
-
-        raise FeatureExtractionError(
-            "Invalid hostname."
-        )
-
-    if hostname in {
-        "localhost",
-        "localhost.localdomain"
-    }:
-
-        raise FeatureExtractionError(
-            "Local URLs are not supported."
-        )
-
-    try:
-
-        literal_ip = ipaddress.ip_address(
-            hostname
-        )
-
-        if _is_private_ip(
-            str(literal_ip)
-        ):
-
-            raise FeatureExtractionError(
-                "Private/local network URLs are not supported."
-            )
-
-        return
-
-    except ValueError:
-
-        pass
-
-
-    records = _resolve_hostname(
-        hostname
-    )
-
-    for record in records:
-
-        address = record[4][0]
-
-        try:
-
-            if _is_private_ip(
-                address
-            ):
-
-                raise FeatureExtractionError(
-                    "Private/local network URLs are not supported."
-                )
-
-        except ValueError:
-
-            continue
-
-
-# ============================================================
-# URL INFORMATION
-# ============================================================
-
-def _get_url_information(
-    url
-):
-
-    parsed = urlparse(
-        url
-    )
-
-    hostname = (
-        parsed.hostname
-        or ""
-    ).lower()
-
-    extracted = _TLD(
-        url
-    )
-
-    domain = (
-        extracted.domain
-        or ""
-    ).lower()
-
-    suffix = (
-        extracted.suffix
-        or ""
-    ).lower()
-
-    subdomain = (
-        extracted.subdomain
-        or ""
-    ).lower()
-
-    if domain and suffix:
-
-        registered_domain = (
-            domain
-            + "."
-            + suffix
-        )
-
-    else:
-
-        registered_domain = (
-            hostname
-        )
-
-    return (
-        parsed,
-        hostname,
-        domain,
-        suffix,
-        subdomain,
-        registered_domain
-    )
-
-
-# ============================================================
 # WORD EXTRACTION
+# Matches the dataset's words_raw_extraction().
 # ============================================================
 
-def _extract_words(
-    url,
-    domain,
-    subdomain,
-    suffix
-):
+def _words_raw_extraction(domain, subdomain, path):
 
-    split_pattern = (
-        r"-|\.|/|\?|\=|\@|\&|\%|\:|\_"
-    )
-
-    if suffix and suffix in url:
-
-        position = url.find(
-            suffix
-        )
-
-        remaining = url[
-            position:
-        ]
-
-        path = remaining.partition(
-            "/"
-        )[2]
-
-    else:
-
-        path = urlparse(
-            url
-        ).path.lstrip(
-            "/"
-        )
-
+    split_pattern = r"-|\.|/|\?|\=|\@|\&|\%|\:|\_"
 
     domain_words = re.split(
         split_pattern,
@@ -460,31 +515,28 @@ def _extract_words(
         path.lower()
     )
 
+    raw_words = (
+        domain_words
+        + path_words
+        + subdomain_words
+    )
 
-    raw_words = [
-        word
-        for word in (
-            domain_words
-            + path_words
-            + subdomain_words
-        )
-        if word
-    ]
+    host_words = (
+        domain_words
+        + subdomain_words
+    )
 
-    host_words = [
-        word
-        for word in (
-            domain_words
-            + subdomain_words
-        )
-        if word
-    ]
+    raw_words = list(
+        filter(None, raw_words)
+    )
 
-    path_words = [
-        word
-        for word in path_words
-        if word
-    ]
+    host_words = list(
+        filter(None, host_words)
+    )
+
+    path_words = list(
+        filter(None, path_words)
+    )
 
     return (
         raw_words,
@@ -493,148 +545,435 @@ def _extract_words(
     )
 
 
-def _minimum_length(
-    words
-):
+# ============================================================
+# WORD STATISTICS
+# ============================================================
+
+def _shortest_word_length(words):
+
+    if len(words) == 0:
+        return 0
 
     return min(
-        (
-            len(word)
-            for word in words
-        ),
-        default=0
+        len(word)
+        for word in words
     )
 
 
-def _maximum_length(
-    words
-):
+def _longest_word_length(words):
+
+    if len(words) == 0:
+        return 0
 
     return max(
-        (
-            len(word)
-            for word in words
-        ),
-        default=0
+        len(word)
+        for word in words
     )
 
 
-# ============================================================
-# CHARACTER REPETITION
-# ============================================================
-
-def _char_repeat(
-    words
-):
+def _char_repeat(words_raw):
+    """
+    Matches the original dataset's consecutive-character
+    repetition calculation for lengths 2, 3, 4 and 5.
+    """
 
     total = 0
 
-    for word in words:
+    for word in words_raw:
 
-        for size in (
+        for repeat_size in [
             2,
             3,
             4,
             5
-        ):
+        ]:
 
-            for index in range(
+            for i in range(
                 len(word)
-                - size
+                - repeat_size
                 + 1
             ):
 
                 part = word[
-                    index:
-                    index + size
+                    i:
+                    i + repeat_size
                 ]
 
                 if (
-                    part
+                    len(part) > 0
                     and all(
-                        character
-                        == part[0]
+                        character == part[0]
                         for character
                         in part
                     )
                 ):
-
                     total += 1
 
     return total
 
 
 # ============================================================
-# IP FEATURE
+# URL FEATURE HELPERS
 # ============================================================
 
-def _has_ip(
-    url
-):
+def _having_ip_address(url):
 
-    hostname = (
-        urlparse(
-            url
-        ).hostname
-        or ""
+    pattern = re.compile(
+        r"(([01]?\d\d?|2[0-4]\d|25[0-5])\."
+        r"([01]?\d\d?|2[0-4]\d|25[0-5])\."
+        r"([01]?\d\d?|2[0-4]\d|25[0-5])\."
+        r"([01]?\d\d?|2[0-4]\d|25[0-5])\/)|"
+        r"((0x[0-9a-fA-F]{1,2})\."
+        r"(0x[0-9a-fA-F]{1,2})\."
+        r"(0x[0-9a-fA-F]{1,2})\."
+        r"(0x[0-9a-fA-F]{1,2})\/)|"
+        r"(?:[a-fA-F0-9]{1,4}:){7}"
+        r"[a-fA-F0-9]{1,4}|"
+        r"[0-9a-fA-F]{7}"
     )
 
-    try:
+    return 1 if pattern.search(url) else 0
 
-        ipaddress.ip_address(
-            hostname
+
+def _phish_hints(url):
+
+    count = 0
+
+    for hint in PHISH_HINTS:
+        count += url.lower().count(
+            hint
         )
 
-        return 1
+    return count
 
-    except ValueError:
 
+def _check_www(words_raw):
+
+    count = 0
+
+    for word in words_raw:
+
+        if word.find("www") != -1:
+            count += 1
+
+    return count
+
+
+def _check_com(words_raw):
+
+    count = 0
+
+    for word in words_raw:
+
+        if word.find("com") != -1:
+            count += 1
+
+    return count
+
+
+def _https_token(scheme):
+    """
+    IMPORTANT:
+    Original dataset encoding:
+        HTTPS -> 0
+        anything else -> 1
+    """
+
+    if scheme == "https":
         return 0
 
+    return 1
 
-# ============================================================
-# URL FEATURES
-# ============================================================
 
-def extract_url_features(
-    url
+def _count_subdomain(url):
+    """
+    Matches the original source implementation.
+
+    Note: despite the feature name, the original implementation
+    counts dots in the FULL URL and compresses the result to 1/2/3.
+    """
+
+    number_of_dots = len(
+        re.findall(r"\.", url)
+    )
+
+    if number_of_dots == 1:
+        return 1
+
+    elif number_of_dots == 2:
+        return 2
+
+    else:
+        return 3
+
+
+def _prefix_suffix(url):
+
+    if re.findall(
+        r"https?://[^\-]+-[^\-]+/",
+        url
+    ):
+        return 1
+
+    return 0
+
+
+def _suspecious_tld(tld):
+
+    if tld in SUSPECIOUS_TLDS:
+        return 1
+
+    return 0
+
+
+def _shortening_service(url):
+
+    if SHORTENING_PATTERN.search(url):
+        return 1
+
+    return 0
+
+
+def _tld_in_path(tld, path):
+
+    if tld and path.lower().count(
+        tld
+    ) > 0:
+        return 1
+
+    return 0
+
+
+def _tld_in_subdomain(tld, subdomain):
+
+    if tld and subdomain.count(
+        tld
+    ) > 0:
+        return 1
+
+    return 0
+
+
+def _count_tilde(url):
+    """
+    Original feature is binary:
+        1 if '~' exists
+        0 otherwise
+    """
+
+    if url.count("~") > 0:
+        return 1
+
+    return 0
+
+
+def _count_double_slash(url):
+    """
+    Matches the original nb_dslash implementation.
+
+    It is binary, not a raw count.
+    """
+
+    positions = [
+        match.start(0)
+        for match in re.finditer(
+            "//",
+            url
+        )
+    ]
+
+    if not positions:
+        return 0
+
+    if positions[-1] > 6:
+        return 1
+
+    return 0
+
+
+def _punycode(url):
+    """
+    Mirrors the original dataset source exactly.
+
+    The original source checks 'http://xn--'.
+    """
+
+    if (
+        url.startswith("http://xn--")
+        or url.startswith("http://xn--")
+    ):
+        return 1
+
+    return 0
+
+
+def _port(url):
+
+    pattern = (
+        r"^[a-z][a-z0-9+\-.]*://"
+        r"([a-z0-9\-._~%!$&'()*+,;=]+@)?"
+        r"([a-z0-9\-._~%]+|"
+        r"\[[a-z0-9\-._~%!$&'()*+,;=:]+\]):"
+        r"([0-9]+)"
+    )
+
+    if re.search(
+        pattern,
+        url
+    ):
+        return 1
+
+    return 0
+
+
+def _path_extension(path):
+
+    if path.endswith(
+        ".txt"
+    ):
+        return 1
+
+    return 0
+
+
+def _domain_in_brand(domain):
+
+    if domain in ALL_BRANDS:
+        return 1
+
+    return 0
+
+
+def _brand_in_location(
+    domain,
+    location
 ):
+    """
+    The original code uses the same function for:
+    - brand_in_subdomain
+    - brand_in_path
+    """
 
-    (
-        parsed,
-        hostname,
-        domain,
-        suffix,
-        subdomain,
-        registered_domain
-    ) = _get_url_information(
+    for brand in ALL_BRANDS:
+
+        if (
+            "." + brand + "."
+            in location
+            and brand not in domain
+        ):
+            return 1
+
+    return 0
+
+
+# ============================================================
+# MAIN FEATURE EXTRACTION
+# ============================================================
+
+def extract_features(url):
+
+    url = normalize_url(
         url
     )
 
+    parsed = urlparse(
+        url
+    )
+
+    hostname = (
+        parsed.hostname
+        or ""
+    )
+
+    extracted = _TLD_EXTRACT(
+        url
+    )
+
+    domain = (
+        extracted.domain
+        or ""
+    )
+
+    subdomain = (
+        extracted.subdomain
+        or ""
+    )
+
+    tld = (
+        extracted.suffix
+        or ""
+    )
+
+    scheme = (
+        parsed.scheme
+        or ""
+    ).lower()
+
+
+    # --------------------------------------------------------
+    # MATCH THE ORIGINAL DATASET'S PATH CONSTRUCTION
+    # --------------------------------------------------------
+
+    if tld:
+
+        tld_position = url.find(
+            tld
+        )
+
+        if tld_position >= 0:
+
+            temp = url[
+                tld_position:
+            ]
+
+        else:
+
+            temp = url
+
+    else:
+
+        temp = url
+
+
+    partitioned = temp.partition(
+        "/"
+    )
+
+    # Used for http_in_path, tld_in_path and path_extension.
+    path = (
+        partitioned[1]
+        + partitioned[2]
+    )
+
+    # Used by word extraction.
+    raw_path = partitioned[2]
+
 
     (
-        raw_words,
-        host_words,
-        path_words
-    ) = _extract_words(
-        url,
+        words_raw,
+        words_raw_host,
+        words_raw_path
+    ) = _words_raw_extraction(
         domain,
         subdomain,
-        suffix
+        raw_path
     )
 
 
-    digit_count = sum(
-        character.isdigit()
-        for character
-        in hostname
-    )
+    # --------------------------------------------------------
+    # RATIO DIGITS HOST
+    # --------------------------------------------------------
 
-
-    if hostname:
+    if len(hostname) > 0:
 
         ratio_digits_host = (
-            digit_count
+            len(
+                re.sub(
+                    r"[^0-9]",
+                    "",
+                    hostname
+                )
+            )
             / len(hostname)
         )
 
@@ -643,643 +982,215 @@ def extract_url_features(
         ratio_digits_host = 0
 
 
-    phish_hints = sum(
-        url.lower().count(
-            hint
-        )
-        for hint in PHISH_HINTS
-    )
+    # --------------------------------------------------------
+    # CREATE EXACT 43 FEATURES
+    # --------------------------------------------------------
 
-
-    nb_www = sum(
-        1
-        for word in raw_words
-        if "www" in word
-    )
-
-
-    return {
+    features = {
 
         "phish_hints":
-            phish_hints,
-
-        "nb_www":
-            nb_www,
+            _phish_hints(
+                url
+            ),
 
         "longest_words_raw":
-            _maximum_length(
-                raw_words
+            _longest_word_length(
+                words_raw
+            ),
+
+        "nb_www":
+            _check_www(
+                words_raw
             ),
 
         "length_url":
             len(url),
 
+        "length_hostname":
+            len(hostname),
+
         "shortest_word_host":
-            _minimum_length(
-                host_words
+            _shortest_word_length(
+                words_raw_host
             ),
 
         "nb_slash":
-            url.count(
-                "/"
-            ),
+            url.count("/"),
 
-        "length_hostname":
-            len(
-                hostname
-            ),
+        "nb_hyphens":
+            url.count("-"),
 
         "char_repeat":
             _char_repeat(
-                raw_words
-            ),
-
-        "shortest_word_path":
-            _minimum_length(
-                path_words
+                words_raw
             ),
 
         "longest_word_host":
-            _maximum_length(
-                host_words
+            _longest_word_length(
+                words_raw_host
             ),
 
-        "nb_hyphens":
-            url.count(
-                "-"
-            ),
-
-        "nb_dots":
-            url.count(
-                "."
+        "shortest_word_path":
+            _shortest_word_length(
+                words_raw_path
             ),
 
         "ratio_digits_host":
             ratio_digits_host,
 
+        # The original dataset calls count_dots(url),
+        # so this counts dots in the full URL.
+        "nb_dots":
+            url.count("."),
+
         "shortest_words_raw":
-            _minimum_length(
-                raw_words
+            _shortest_word_length(
+                words_raw
             ),
 
         "domain_in_brand":
-            (
-                1
-                if domain in BRANDS
-                else 0
-            ),
-
-        "ip":
-            _has_ip(
-                url
+            _domain_in_brand(
+                domain
             ),
 
         "nb_qm":
-            url.count(
-                "?"
+            url.count("?"),
+
+        "nb_underscore":
+            url.count("_"),
+
+        "ip":
+            _having_ip_address(
+                url
             ),
-    }
 
-
-# ============================================================
-# DOWNLOAD WEBPAGE
-# ============================================================
-
-def _download_html(
-    url
-):
-
-    _validate_public_url(
-        url
-    )
-
-    session = requests.Session()
-
-    session.max_redirects = (
-        MAX_REDIRECTS
-    )
-
-    try:
-
-        response = session.get(
-            url,
-            headers=HEADERS,
-            timeout=(
-                CONNECT_TIMEOUT,
-                READ_TIMEOUT
+        "https_token":
+            _https_token(
+                scheme
             ),
-            allow_redirects=True
-        )
 
-    except requests.TooManyRedirects as error:
+        "nb_subdomains":
+            _count_subdomain(
+                url
+            ),
+
+        "prefix_suffix":
+            _prefix_suffix(
+                url
+            ),
+
+        "suspecious_tld":
+            _suspecious_tld(
+                tld
+            ),
+
+        "shortening_service":
+            _shortening_service(
+                url
+            ),
+
+        "nb_com":
+            _check_com(
+                words_raw
+            ),
+
+        "nb_and":
+            url.count("&"),
+
+        "tld_in_path":
+            _tld_in_path(
+                tld,
+                path
+            ),
+
+        "nb_percent":
+            url.count("%"),
+
+        "nb_space":
+            (
+                url.count(" ")
+                + url.count("%20")
+            ),
+
+        "tld_in_subdomain":
+            _tld_in_subdomain(
+                tld,
+                subdomain
+            ),
+
+        "nb_at":
+            url.count("@"),
+
+        "nb_semicolumn":
+            url.count(";"),
+
+        "nb_tilde":
+            _count_tilde(
+                url
+            ),
+
+        "nb_colon":
+            url.count(":"),
+
+        "http_in_path":
+            path.count(
+                "http"
+            ),
+
+        "nb_dslash":
+            _count_double_slash(
+                url
+            ),
+
+        # The original master extractor calls brand_in_path()
+        # with subdomain for this feature.
+        "brand_in_subdomain":
+            _brand_in_location(
+                domain,
+                subdomain
+            ),
+
+        "brand_in_path":
+            _brand_in_location(
+                domain,
+                path
+            ),
+
+        "nb_comma":
+            url.count(","),
+
+        "port":
+            _port(
+                url
+            ),
+
+        "path_extension":
+            _path_extension(
+                path
+            ),
+
+        "punycode":
+            _punycode(
+                url
+            ),
 
-        raise FeatureExtractionError(
-            "Website redirected too many times."
-        ) from error
+        "nb_star":
+            url.count("*"),
 
-    except requests.RequestException as error:
-
-        raise FeatureExtractionError(
-            "Website could not be downloaded."
-        ) from error
-
-
-    if response.status_code >= 400:
-
-        raise FeatureExtractionError(
-            "Website returned HTTP "
-            + str(
-                response.status_code
-            )
-        )
-
-
-    content = response.content
-
-
-    if not content:
-
-        raise FeatureExtractionError(
-            "Website returned no HTML content."
-        )
-
-
-    if (
-        len(content)
-        > MAX_HTML_BYTES
-    ):
-
-        raise FeatureExtractionError(
-            "Website is too large to analyze."
-        )
-
-
-    return content
-
-
-# ============================================================
-# INTERNAL / EXTERNAL RESOURCE CHECK
-# ============================================================
-
-def _is_internal_resource(
-    resource,
-    hostname,
-    registered_domain
-):
-
-    resource = (
-        resource
-        or ""
-    ).strip()
-
-
-    if not resource:
-
-        return True
-
-
-    if resource.startswith(
-        (
-            "/",
-            "#",
-            "?",
-            "./",
-            "../"
-        )
-    ):
-
-        return True
-
-
-    if resource.lower().startswith(
-        (
-            "javascript:",
-            "mailto:",
-            "tel:"
-        )
-    ):
-
-        return True
-
-
-    parsed = urlparse(
-        resource
-    )
-
-
-    resource_hostname = (
-        parsed.hostname
-        or ""
-    ).lower()
-
-
-    if not resource_hostname:
-
-        return True
-
-
-    resource_tld = _TLD(
-        resource_hostname
-    )
-
-
-    if (
-        resource_tld.domain
-        and resource_tld.suffix
-    ):
-
-        resource_registered = (
-            resource_tld.domain
-            + "."
-            + resource_tld.suffix
-        ).lower()
-
-    else:
-
-        resource_registered = (
-            resource_hostname
-        )
-
-
-    return (
-        resource_hostname
-        == hostname
-        or resource_registered
-        == registered_domain
-    )
-
-
-# ============================================================
-# WEBPAGE FEATURES
-# ============================================================
-
-def extract_webpage_features(
-    url,
-    html
-):
-
-    (
-        parsed,
-        hostname,
-        domain,
-        suffix,
-        subdomain,
-        registered_domain
-    ) = _get_url_information(
-        url
-    )
-
-
-    soup = BeautifulSoup(
-        html,
-        "html.parser"
-    )
-
-
-    # ========================================================
-    # HYPERLINKS
-    # ========================================================
-
-    anchors = soup.find_all(
-        "a",
-        href=True
-    )
-
-
-    internal_links = 0
-    external_links = 0
-
-    unsafe_anchors = 0
-    anchor_count = 0
-
-
-    for anchor in anchors:
-
-        href = (
-            anchor.get(
-                "href"
-            )
-            or ""
-        ).strip()
-
-
-        if not href:
-
-            continue
-
-
-        anchor_count += 1
-
-
-        href_lower = href.lower()
-
-
-        if (
-            href_lower in NULL_FORMAT
-            or href.startswith(
-                "#"
-            )
-            or href_lower.startswith(
-                "javascript:"
-            )
-            or href_lower.startswith(
-                "mailto:"
-            )
-        ):
-
-            unsafe_anchors += 1
-
-
-        if _is_internal_resource(
-            href,
-            hostname,
-            registered_domain
-        ):
-
-            internal_links += 1
-
-        else:
-
-            external_links += 1
-
-
-    total_hyperlinks = (
-        internal_links
-        + external_links
-    )
-
-
-    if total_hyperlinks:
-
-        ratio_int_hyperlinks = (
-            internal_links
-            / total_hyperlinks
-        )
-
-        ratio_ext_hyperlinks = (
-            external_links
-            / total_hyperlinks
-        )
-
-    else:
-
-        ratio_int_hyperlinks = 0
-        ratio_ext_hyperlinks = 0
-
-
-    if anchor_count:
-
-        safe_anchor = (
-            unsafe_anchors
-            / anchor_count
-            * 100
-        )
-
-    else:
-
-        safe_anchor = 0
-
-
-    # ========================================================
-    # MEDIA
-    # ========================================================
-
-    internal_media = 0
-    external_media = 0
-
-
-    for tag_name in (
-        "img",
-        "audio",
-        "video",
-        "source",
-        "embed",
-        "iframe"
-    ):
-
-        for tag in soup.find_all(
-            tag_name,
-            src=True
-        ):
-
-            source = (
-                tag.get(
-                    "src"
-                )
-                or ""
-            ).strip()
-
-
-            if not source:
-
-                continue
-
-
-            if _is_internal_resource(
-                source,
-                hostname,
-                registered_domain
-            ):
-
-                internal_media += 1
-
-            else:
-
-                external_media += 1
-
-
-    total_media = (
-        internal_media
-        + external_media
-    )
-
-
-    if total_media:
-
-        ratio_int_media = (
-            internal_media
-            / total_media
-            * 100
-        )
-
-        ratio_ext_media = (
-            external_media
-            / total_media
-            * 100
-        )
-
-    else:
-
-        ratio_int_media = 0
-        ratio_ext_media = 0
-
-
-    # ========================================================
-    # DOMAIN IN TITLE
-    # ========================================================
-
-    title_tag = soup.find(
-        "title"
-    )
-
-
-    if title_tag:
-
-        title = title_tag.get_text(
-            " ",
-            strip=True
-        )
-
-    else:
-
-        title = ""
-
-
-    if (
-        domain
-        and domain.lower()
-        in title.lower()
-    ):
-
-        domain_in_title = 0
-
-    else:
-
-        domain_in_title = 1
-
-
-    # ========================================================
-    # DOMAIN WITH COPYRIGHT
-    # ========================================================
-
-    page_text = soup.get_text(
-        " ",
-        strip=True
-    )
-
-
-    copyright_symbol = re.search(
-        r"[©™®]",
-        page_text
-    )
-
-
-    if copyright_symbol:
-
-        start = max(
-            0,
-            copyright_symbol.start()
-            - 50
-        )
-
-        end = min(
-            len(page_text),
-            copyright_symbol.start()
-            + 50
-        )
-
-
-        nearby_text = page_text[
-            start:end
-        ]
-
-
-        if (
-            domain
-            and domain.lower()
-            in nearby_text.lower()
-        ):
-
-            domain_with_copyright = 0
-
-        else:
-
-            domain_with_copyright = 1
-
-    else:
-
-        domain_with_copyright = 0
-
-
-    return {
-
-        "nb_hyperlinks":
-            total_hyperlinks,
-
-        "safe_anchor":
-            safe_anchor,
-
-        "ratio_extHyperlinks":
-            ratio_ext_hyperlinks,
-
-        "ratio_intHyperlinks":
-            ratio_int_hyperlinks,
-
-        "domain_in_title":
-            domain_in_title,
-
-        "domain_with_copyright":
-            domain_with_copyright,
-
-        "ratio_intMedia":
-            ratio_int_media,
-
-        "ratio_extMedia":
-            ratio_ext_media,
+        "nb_dollar":
+            url.count("$"),
     }
 
 
-# ============================================================
-# MAIN FUNCTION USED BY app.py
-# ============================================================
+    # --------------------------------------------------------
+    # SAFETY CHECK
+    # --------------------------------------------------------
 
-def extract_features(
-    url
-):
-
-    # Normalize URL
-    url = normalize_url(
-        url
-    )
-
-
-    # URL-based features
-    url_features = (
-        extract_url_features(
-            url
-        )
-    )
-
-
-    # Download the webpage once
-    html = _download_html(
-        url
-    )
-
-
-    # HTML-based features
-    webpage_features = (
-        extract_webpage_features(
-            url,
-            html
-        )
-    )
-
-
-    # Combine features
-    features = {
-        **url_features,
-        **webpage_features
-    }
-
-
-    # Verify all 25 model features
     missing_features = [
         feature
         for feature in SELECTED_FEATURES
         if feature not in features
     ]
-
 
     if missing_features:
 
@@ -1291,12 +1202,11 @@ def extract_features(
         )
 
 
-    # Return ONLY the 25 features used
-    # by the Random Forest.
+    # Return only the selected features,
+    # in the exact model feature order.
     return {
         feature:
-            features[
-                feature
-            ]
-        for feature in SELECTED_FEATURES
+            features[feature]
+        for feature
+        in SELECTED_FEATURES
     }
