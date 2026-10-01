@@ -1,4 +1,7 @@
 import re
+import socket
+import ipaddress
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from urllib.parse import urlparse
 
 import requests
@@ -12,6 +15,7 @@ from bs4 import BeautifulSoup
 
 CONNECT_TIMEOUT = 3
 READ_TIMEOUT = 6
+DNS_TIMEOUT = 2
 MAX_REDIRECTS = 3
 MAX_HTML_BYTES = 3 * 1024 * 1024
 
@@ -29,7 +33,7 @@ _TLD = tldextract.TLDExtract(
 
 
 # ============================================================
-# EXACT FEATURES USED BY THE FINAL MODEL
+# EXACT 25 FEATURES USED BY FINAL MODEL
 # ============================================================
 
 SELECTED_FEATURES = [
@@ -62,7 +66,7 @@ SELECTED_FEATURES = [
 
 
 # ============================================================
-# ORIGINAL DATASET REFERENCE VALUES
+# REFERENCE VALUES
 # ============================================================
 
 PHISH_HINTS = (
@@ -85,46 +89,76 @@ PHISH_HINTS = (
 )
 
 
-# Same brand list used by the original dataset.
-# Kept as normal strings so there is NO triple-quote syntax problem.
-
-BRANDS = set((
-    "accenture activisionblizzard adidas adobe adultfriendfinder "
-    "agriculturalbankofchina akamai alibaba aliexpress alipay alliance "
-    "alliancedata allianceone allianz alphabet amazon americanairlines "
-    "americanexpress americantower andersons apache apple arrow "
-    "ashleymadison audi autodesk avaya avisbudget avon axa badoo baidu "
-    "bankofamerica bankofchina bankofnewyorkmellon barclays barnes bbc "
-    "bbt bbva bebo benchmark bestbuy bim bing biogen blackstone blogger "
-    "blogspot bmw bnpparibas boeing booking broadcom burberry caesars "
-    "canon cardinalhealth carmax carters caterpillar cheesecakefactory "
-    "chinaconstructionbank cinemark cintas cisco citi citigroup cnet "
-    "coca-cola colgate colgate-palmolive columbiasportswear commonwealth "
-    "communityhealth continental dell deltaairlines deutschebank disney "
-    "dolby dominos donaldson dreamworks dropbox eastman eastmankodak ebay "
-    "edison electronicarts equifax equinix expedia express facebook fedex "
-    "flickr footlocker ford fordmotor fossil fosterwheeler foxconn fujitsu "
-    "gap gartner genesis genuine genworth gigamedia gillette github global "
-    "globalpayments goodyeartire google gucci harley-davidson harris "
-    "hewlettpackard hilton hiltonworldwide hmstatil honda hsbc huawei "
-    "huntingtonbancshares hyundai ibm ikea imdb imgur ingbank insight "
-    "instagram intel jackdaniels jnj jpmorgan jpmorganchase kelly kfc "
-    "kindermorgan lbrands lego lennox lenovo lindsay linkedin livejasmin "
-    "loreal louisvuitton mastercard mcdonalds mckesson mckinsey "
-    "mercedes-benz microsoft microsoftonline mini mitsubishi morganstanley "
-    "motorola mrcglobal mtv myspace nescafe nestle netflix nike nintendo "
-    "nissan nissanmotor nvidia nytimes oracle panasonic paypal pepsi "
-    "pepsico philips pinterest pocket pornhub porsche prada rabobank "
-    "reddit regal royalbankofcanada samsung scotiabank shell siemens skype "
-    "snapchat sony soundcloud spiritairlines spotify sprite stackexchange "
-    "stackoverflow starbucks swatch swift symantec synaptics target telegram "
-    "tesla teslamotors theguardian homedepot piratebay tiffany tinder tmall "
-    "toyota tripadvisor tumblr twitch twitter underarmour unilever universal "
-    "ups verizon viber visa volkswagen volvocars walmart wechat weibo "
-    "whatsapp wikipedia wordpress yahoo yamaha yandex youtube zara zebra "
-    "iphone icloud itunes sinara normshield bga sinaralabs roksit cybrml "
-    "turkcell n11 hepsiburada migros"
-).split())
+BRANDS = {
+    "adidas",
+    "adobe",
+    "alibaba",
+    "aliexpress",
+    "amazon",
+    "americanexpress",
+    "apple",
+    "bankofamerica",
+    "barclays",
+    "bbc",
+    "bestbuy",
+    "bing",
+    "bmw",
+    "booking",
+    "cisco",
+    "citi",
+    "citigroup",
+    "dell",
+    "disney",
+    "dropbox",
+    "ebay",
+    "facebook",
+    "fedex",
+    "ford",
+    "github",
+    "google",
+    "gucci",
+    "honda",
+    "hsbc",
+    "huawei",
+    "ibm",
+    "ikea",
+    "instagram",
+    "intel",
+    "linkedin",
+    "mastercard",
+    "microsoft",
+    "netflix",
+    "nike",
+    "nintendo",
+    "nissan",
+    "oracle",
+    "paypal",
+    "pinterest",
+    "reddit",
+    "samsung",
+    "skype",
+    "snapchat",
+    "sony",
+    "spotify",
+    "starbucks",
+    "telegram",
+    "tesla",
+    "tiktok",
+    "toyota",
+    "tripadvisor",
+    "tumblr",
+    "twitch",
+    "twitter",
+    "visa",
+    "volkswagen",
+    "walmart",
+    "wechat",
+    "whatsapp",
+    "wikipedia",
+    "wordpress",
+    "yahoo",
+    "youtube",
+}
 
 
 NULL_FORMAT = {
@@ -136,9 +170,10 @@ NULL_FORMAT = {
     "#void",
     "#whatever",
     "#content",
+    "javascript:void(0)",
+    "javascript:void(0);",
     "javascript::void(0)",
     "javascript::void(0);",
-    "javascript::;",
     "javascript",
 }
 
@@ -152,7 +187,7 @@ class FeatureExtractionError(Exception):
 
 
 # ============================================================
-# BASIC URL HELPERS
+# NORMALIZE URL
 # ============================================================
 
 def normalize_url(url):
@@ -160,7 +195,6 @@ def normalize_url(url):
     url = str(url).strip()
 
     if not url:
-
         raise FeatureExtractionError(
             "Please enter a website URL."
         )
@@ -171,18 +205,11 @@ def normalize_url(url):
             "https://"
         )
     ):
+        url = "https://" + url
 
-        url = (
-            "https://"
-            + url
-        )
-
-    parsed = urlparse(
-        url
-    )
+    parsed = urlparse(url)
 
     if not parsed.hostname:
-
         raise FeatureExtractionError(
             "Invalid website URL."
         )
@@ -190,7 +217,143 @@ def normalize_url(url):
     return url
 
 
-def _url_parts(url):
+# ============================================================
+# PROTECT STREAMLIT SERVER FROM PRIVATE / LOCAL URLS
+# ============================================================
+
+def _is_private_ip(address):
+
+    ip = ipaddress.ip_address(
+        address
+    )
+
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def _resolve_hostname(
+    hostname
+):
+
+    def lookup():
+
+        return socket.getaddrinfo(
+            hostname,
+            None
+        )
+
+    with ThreadPoolExecutor(
+        max_workers=1
+    ) as executor:
+
+        future = executor.submit(
+            lookup
+        )
+
+        try:
+
+            return future.result(
+                timeout=DNS_TIMEOUT
+            )
+
+        except TimeoutError as error:
+
+            raise FeatureExtractionError(
+                "DNS lookup timed out."
+            ) from error
+
+        except socket.gaierror as error:
+
+            raise FeatureExtractionError(
+                "Website hostname could not be resolved."
+            ) from error
+
+
+def _validate_public_url(
+    url
+):
+
+    parsed = urlparse(
+        url
+    )
+
+    hostname = (
+        parsed.hostname
+        or ""
+    ).lower()
+
+    if not hostname:
+
+        raise FeatureExtractionError(
+            "Invalid hostname."
+        )
+
+    if hostname in {
+        "localhost",
+        "localhost.localdomain"
+    }:
+
+        raise FeatureExtractionError(
+            "Local URLs are not supported."
+        )
+
+    try:
+
+        literal_ip = ipaddress.ip_address(
+            hostname
+        )
+
+        if _is_private_ip(
+            str(literal_ip)
+        ):
+
+            raise FeatureExtractionError(
+                "Private/local network URLs are not supported."
+            )
+
+        return
+
+    except ValueError:
+
+        pass
+
+
+    records = _resolve_hostname(
+        hostname
+    )
+
+    for record in records:
+
+        address = record[4][0]
+
+        try:
+
+            if _is_private_ip(
+                address
+            ):
+
+                raise FeatureExtractionError(
+                    "Private/local network URLs are not supported."
+                )
+
+        except ValueError:
+
+            continue
+
+
+# ============================================================
+# URL INFORMATION
+# ============================================================
+
+def _get_url_information(
+    url
+):
 
     parsed = urlparse(
         url
@@ -248,7 +411,7 @@ def _url_parts(url):
 # WORD EXTRACTION
 # ============================================================
 
-def _split_words_like_dataset(
+def _extract_words(
     url,
     domain,
     subdomain,
@@ -261,37 +424,26 @@ def _split_words_like_dataset(
 
     if suffix and suffix in url:
 
-        suffix_position = (
-            url.find(
-                suffix
-            )
+        position = url.find(
+            suffix
         )
 
-        remaining_url = url[
-            suffix_position:
+        remaining = url[
+            position:
         ]
 
-        partitioned = (
-            remaining_url.partition(
-                "/"
-            )
-        )
-
-        path_raw = (
-            partitioned[2]
-        )
+        path = remaining.partition(
+            "/"
+        )[2]
 
     else:
 
-        parsed = urlparse(
+        path = urlparse(
             url
+        ).path.lstrip(
+            "/"
         )
 
-        path_raw = (
-            parsed.path.lstrip(
-                "/"
-            )
-        )
 
     domain_words = re.split(
         split_pattern,
@@ -305,8 +457,9 @@ def _split_words_like_dataset(
 
     path_words = re.split(
         split_pattern,
-        path_raw.lower()
+        path.lower()
     )
+
 
     raw_words = [
         word
@@ -340,7 +493,9 @@ def _split_words_like_dataset(
     )
 
 
-def _minimum_length(words):
+def _minimum_length(
+    words
+):
 
     return min(
         (
@@ -351,7 +506,9 @@ def _minimum_length(words):
     )
 
 
-def _maximum_length(words):
+def _maximum_length(
+    words
+):
 
     return max(
         (
@@ -381,15 +538,15 @@ def _char_repeat(
             5
         ):
 
-            for i in range(
+            for index in range(
                 len(word)
                 - size
                 + 1
             ):
 
                 part = word[
-                    i:
-                    i + size
+                    index:
+                    index + size
                 ]
 
                 if (
@@ -411,35 +568,32 @@ def _char_repeat(
 # IP FEATURE
 # ============================================================
 
-def _having_ip(
+def _has_ip(
     url
 ):
 
-    pattern = re.compile(
-        r"(([01]?\d\d?|2[0-4]\d|25[0-5])\."
-        r"([01]?\d\d?|2[0-4]\d|25[0-5])\."
-        r"([01]?\d\d?|2[0-4]\d|25[0-5])\."
-        r"([01]?\d\d?|2[0-4]\d|25[0-5])\/)|"
-        r"((0x[0-9a-fA-F]{1,2})\."
-        r"(0x[0-9a-fA-F]{1,2})\."
-        r"(0x[0-9a-fA-F]{1,2})\."
-        r"(0x[0-9a-fA-F]{1,2})\/)|"
-        r"(?:[a-fA-F0-9]{1,4}:){7}"
-        r"[a-fA-F0-9]{1,4}|"
-        r"[0-9a-fA-F]{7}"
+    hostname = (
+        urlparse(
+            url
+        ).hostname
+        or ""
     )
 
-    if pattern.search(
-        url
-    ):
+    try:
+
+        ipaddress.ip_address(
+            hostname
+        )
 
         return 1
 
-    return 0
+    except ValueError:
+
+        return 0
 
 
 # ============================================================
-# URL-BASED FEATURES
+# URL FEATURES
 # ============================================================
 
 def extract_url_features(
@@ -453,39 +607,41 @@ def extract_url_features(
         suffix,
         subdomain,
         registered_domain
-    ) = _url_parts(
+    ) = _get_url_information(
         url
     )
+
 
     (
         raw_words,
         host_words,
         path_words
-    ) = _split_words_like_dataset(
+    ) = _extract_words(
         url,
         domain,
         subdomain,
         suffix
     )
 
-    digits_in_host = len(
-        re.sub(
-            r"[^0-9]",
-            "",
-            hostname
-        )
+
+    digit_count = sum(
+        character.isdigit()
+        for character
+        in hostname
     )
+
 
     if hostname:
 
         ratio_digits_host = (
-            digits_in_host
+            digit_count
             / len(hostname)
         )
 
     else:
 
         ratio_digits_host = 0
+
 
     phish_hints = sum(
         url.lower().count(
@@ -494,17 +650,13 @@ def extract_url_features(
         for hint in PHISH_HINTS
     )
 
+
     nb_www = sum(
         1
         for word in raw_words
         if "www" in word
     )
 
-    domain_in_brand = (
-        1
-        if domain in BRANDS
-        else 0
-    )
 
     return {
 
@@ -571,10 +723,14 @@ def extract_url_features(
             ),
 
         "domain_in_brand":
-            domain_in_brand,
+            (
+                1
+                if domain in BRANDS
+                else 0
+            ),
 
         "ip":
-            _having_ip(
+            _has_ip(
                 url
             ),
 
@@ -592,6 +748,10 @@ def extract_url_features(
 def _download_html(
     url
 ):
+
+    _validate_public_url(
+        url
+    )
 
     session = requests.Session()
 
@@ -614,14 +774,15 @@ def _download_html(
     except requests.TooManyRedirects as error:
 
         raise FeatureExtractionError(
-            "The website redirected too many times."
+            "Website redirected too many times."
         ) from error
 
     except requests.RequestException as error:
 
         raise FeatureExtractionError(
-            "The webpage could not be downloaded."
+            "Website could not be downloaded."
         ) from error
+
 
     if response.status_code >= 400:
 
@@ -630,18 +791,18 @@ def _download_html(
             + str(
                 response.status_code
             )
-            + "."
         )
 
-    content = (
-        response.content
-    )
+
+    content = response.content
+
 
     if not content:
 
         raise FeatureExtractionError(
-            "The webpage returned no content."
+            "Website returned no HTML content."
         )
+
 
     if (
         len(content)
@@ -649,488 +810,103 @@ def _download_html(
     ):
 
         raise FeatureExtractionError(
-            "The webpage is too large to analyze."
+            "Website is too large to analyze."
         )
+
 
     return content
 
 
 # ============================================================
-# HTML COLLECTION HELPERS
+# INTERNAL / EXTERNAL RESOURCE CHECK
 # ============================================================
 
-def _collection():
-
-    return {
-        "internals": [],
-        "externals": [],
-        "null": []
-    }
-
-
-def _looks_internal(
-    value,
+def _is_internal_resource(
+    resource,
     hostname,
     registered_domain
 ):
 
-    dots = len(
-        re.findall(
-            r"\.",
-            value
-        )
-    )
-
-    return (
-        hostname in value
-        or registered_domain in value
-        or dots == 1
-        or not value.startswith(
-            "http"
-        )
-    )
-
-
-def _add_resource(
-    target,
-    value,
-    hostname,
-    registered_domain
-):
-
-    value = (
-        value
+    resource = (
+        resource
         or ""
     ).strip()
 
-    internal = (
-        _looks_internal(
-            value,
-            hostname,
-            registered_domain
+
+    if not resource:
+
+        return True
+
+
+    if resource.startswith(
+        (
+            "/",
+            "#",
+            "?",
+            "./",
+            "../"
         )
+    ):
+
+        return True
+
+
+    if resource.lower().startswith(
+        (
+            "javascript:",
+            "mailto:",
+            "tel:"
+        )
+    ):
+
+        return True
+
+
+    parsed = urlparse(
+        resource
     )
 
-    if internal:
 
-        # Matches the behavior used by the
-        # original dataset extraction code.
+    resource_hostname = (
+        parsed.hostname
+        or ""
+    ).lower()
 
-        if not value.startswith(
-            "http"
-        ):
 
-            if not value.startswith(
-                "/"
-            ):
+    if not resource_hostname:
 
-                target[
-                    "internals"
-                ].append(
-                    hostname
-                    + "/"
-                    + value
-                )
+        return True
 
-            elif value in NULL_FORMAT:
 
-                target[
-                    "null"
-                ].append(
-                    value
-                )
+    resource_tld = _TLD(
+        resource_hostname
+    )
 
-            else:
 
-                target[
-                    "internals"
-                ].append(
-                    hostname
-                    + value
-                )
+    if (
+        resource_tld.domain
+        and resource_tld.suffix
+    ):
+
+        resource_registered = (
+            resource_tld.domain
+            + "."
+            + resource_tld.suffix
+        ).lower()
 
     else:
 
-        target[
-            "externals"
-        ].append(
-            value
+        resource_registered = (
+            resource_hostname
         )
 
 
-# ============================================================
-# COLLECT WEBPAGE DATA
-# ============================================================
-
-def _collect_page_data(
-    url,
-    html
-):
-
-    (
-        parsed,
-        hostname,
-        domain,
-        suffix,
-        subdomain,
-        registered_domain
-    ) = _url_parts(
-        url
+    return (
+        resource_hostname
+        == hostname
+        or resource_registered
+        == registered_domain
     )
-
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
-        from_encoding="iso-8859-1"
-    )
-
-    href = _collection()
-    link = _collection()
-    media = _collection()
-    form = _collection()
-    css = _collection()
-    favicon = _collection()
-
-    anchor = {
-        "safe": [],
-        "unsafe": [],
-        "null": []
-    }
-
-
-    # ========================================================
-    # ANCHOR TAGS
-    # ========================================================
-
-    for tag in soup.find_all(
-        "a",
-        href=True
-    ):
-
-        value = (
-            tag.get(
-                "href"
-            )
-            or ""
-        ).strip()
-
-        internal = (
-            _looks_internal(
-                value,
-                hostname,
-                registered_domain
-            )
-        )
-
-        if internal:
-
-            lower_value = (
-                value.lower()
-            )
-
-            if (
-                "#"
-                in value
-                or "javascript"
-                in lower_value
-                or "mailto"
-                in lower_value
-            ):
-
-                anchor[
-                    "unsafe"
-                ].append(
-                    value
-                )
-
-        else:
-
-            anchor[
-                "safe"
-            ].append(
-                value
-            )
-
-        _add_resource(
-            href,
-            value,
-            hostname,
-            registered_domain
-        )
-
-
-    # ========================================================
-    # MEDIA
-    # ========================================================
-
-    for tag_name in (
-        "img",
-        "audio",
-        "embed",
-        "iframe"
-    ):
-
-        for tag in soup.find_all(
-            tag_name,
-            src=True
-        ):
-
-            _add_resource(
-                media,
-                tag.get(
-                    "src"
-                ),
-                hostname,
-                registered_domain
-            )
-
-
-    # ========================================================
-    # LINK TAGS
-    # ========================================================
-
-    for tag in soup.find_all(
-        "link",
-        href=True
-    ):
-
-        _add_resource(
-            link,
-            tag.get(
-                "href"
-            ),
-            hostname,
-            registered_domain
-        )
-
-
-    # ========================================================
-    # SCRIPT TAGS
-    # ========================================================
-
-    for tag in soup.find_all(
-        "script",
-        src=True
-    ):
-
-        _add_resource(
-            link,
-            tag.get(
-                "src"
-            ),
-            hostname,
-            registered_domain
-        )
-
-
-    # ========================================================
-    # CSS
-    # ========================================================
-
-    for tag in soup.find_all(
-        "link",
-        rel="stylesheet"
-    ):
-
-        if tag.get(
-            "href"
-        ):
-
-            _add_resource(
-                css,
-                tag.get(
-                    "href"
-                ),
-                hostname,
-                registered_domain
-            )
-
-
-    for style in soup.find_all(
-        "style"
-    ):
-
-        style_text = (
-            style.string
-            or style.get_text()
-            or ""
-        )
-
-        match = re.search(
-            r"@import\s+url\(([^)]+)\)",
-            style_text,
-            flags=re.IGNORECASE
-        )
-
-        if match:
-
-            imported_url = (
-                match.group(
-                    1
-                )
-                .strip()
-                .strip(
-                    "'\""
-                )
-            )
-
-            _add_resource(
-                css,
-                imported_url,
-                hostname,
-                registered_domain
-            )
-
-
-    # ========================================================
-    # FORMS
-    # ========================================================
-
-    for tag in soup.find_all(
-        "form",
-        action=True
-    ):
-
-        _add_resource(
-            form,
-            tag.get(
-                "action"
-            ),
-            hostname,
-            registered_domain
-        )
-
-
-    # ========================================================
-    # FAVICON / HEAD LINKS
-    # ========================================================
-
-    head = soup.find(
-        "head"
-    )
-
-    if head:
-
-        # Original extractor counted head links.
-
-        for tag in head.find_all(
-            "link",
-            href=True
-        ):
-
-            _add_resource(
-                favicon,
-                tag.get(
-                    "href"
-                ),
-                hostname,
-                registered_domain
-            )
-
-
-        # It also counted icon links.
-
-        for tag in head.find_all(
-            "link",
-            href=True
-        ):
-
-            rel = tag.get(
-                "rel",
-                []
-            )
-
-            if isinstance(
-                rel,
-                str
-            ):
-
-                rel = [
-                    rel
-                ]
-
-            is_icon = any(
-                str(
-                    value
-                )
-                .lower()
-                .endswith(
-                    "icon"
-                )
-                for value in rel
-            )
-
-            if is_icon:
-
-                _add_resource(
-                    favicon,
-                    tag.get(
-                        "href"
-                    ),
-                    hostname,
-                    registered_domain
-                )
-
-
-    # ========================================================
-    # TITLE
-    # ========================================================
-
-    title = ""
-
-    try:
-
-        if (
-            soup.title
-            and soup.title.string
-        ):
-
-            title = str(
-                soup.title.string
-            )
-
-    except Exception:
-
-        title = ""
-
-
-    page_text = (
-        soup.get_text()
-    )
-
-
-    return {
-
-        "domain":
-            domain,
-
-        "href":
-            href,
-
-        "link":
-            link,
-
-        "media":
-            media,
-
-        "form":
-            form,
-
-        "css":
-            css,
-
-        "favicon":
-            favicon,
-
-        "anchor":
-            anchor,
-
-        "title":
-            title,
-
-        "text":
-            page_text,
-    }
 
 
 # ============================================================
@@ -1142,58 +918,106 @@ def extract_webpage_features(
     html
 ):
 
-    data = _collect_page_data(
-        url,
-        html
+    (
+        parsed,
+        hostname,
+        domain,
+        suffix,
+        subdomain,
+        registered_domain
+    ) = _get_url_information(
+        url
     )
 
-    groups = (
-        data["href"],
-        data["link"],
-        data["media"],
-        data["form"],
-        data["css"],
-        data["favicon"]
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser"
     )
 
 
     # ========================================================
-    # HYPERLINK COUNTS
+    # HYPERLINKS
     # ========================================================
 
-    internal_count = sum(
-        len(
-            group[
-                "internals"
-            ]
-        )
-        for group in groups
+    anchors = soup.find_all(
+        "a",
+        href=True
     )
 
-    external_count = sum(
-        len(
-            group[
-                "externals"
-            ]
-        )
-        for group in groups
-    )
+
+    internal_links = 0
+    external_links = 0
+
+    unsafe_anchors = 0
+    anchor_count = 0
+
+
+    for anchor in anchors:
+
+        href = (
+            anchor.get(
+                "href"
+            )
+            or ""
+        ).strip()
+
+
+        if not href:
+
+            continue
+
+
+        anchor_count += 1
+
+
+        href_lower = href.lower()
+
+
+        if (
+            href_lower in NULL_FORMAT
+            or href.startswith(
+                "#"
+            )
+            or href_lower.startswith(
+                "javascript:"
+            )
+            or href_lower.startswith(
+                "mailto:"
+            )
+        ):
+
+            unsafe_anchors += 1
+
+
+        if _is_internal_resource(
+            href,
+            hostname,
+            registered_domain
+        ):
+
+            internal_links += 1
+
+        else:
+
+            external_links += 1
+
 
     total_hyperlinks = (
-        internal_count
-        + external_count
+        internal_links
+        + external_links
     )
 
 
     if total_hyperlinks:
 
         ratio_int_hyperlinks = (
-            internal_count
+            internal_links
             / total_hyperlinks
         )
 
         ratio_ext_hyperlinks = (
-            external_count
+            external_links
             / total_hyperlinks
         )
 
@@ -1203,37 +1027,11 @@ def extract_webpage_features(
         ratio_ext_hyperlinks = 0
 
 
-    # ========================================================
-    # SAFE ANCHOR
-    # ========================================================
-
-    anchor = data[
-        "anchor"
-    ]
-
-    anchor_total = (
-        len(
-            anchor[
-                "safe"
-            ]
-        )
-        +
-        len(
-            anchor[
-                "unsafe"
-            ]
-        )
-    )
-
-    if anchor_total:
+    if anchor_count:
 
         safe_anchor = (
-            len(
-                anchor[
-                    "unsafe"
-                ]
-            )
-            / anchor_total
+            unsafe_anchors
+            / anchor_count
             * 100
         )
 
@@ -1243,41 +1041,70 @@ def extract_webpage_features(
 
 
     # ========================================================
-    # MEDIA RATIOS
+    # MEDIA
     # ========================================================
 
-    media = data[
-        "media"
-    ]
+    internal_media = 0
+    external_media = 0
 
-    media_internal = len(
-        media[
-            "internals"
-        ]
+
+    for tag_name in (
+        "img",
+        "audio",
+        "video",
+        "source",
+        "embed",
+        "iframe"
+    ):
+
+        for tag in soup.find_all(
+            tag_name,
+            src=True
+        ):
+
+            source = (
+                tag.get(
+                    "src"
+                )
+                or ""
+            ).strip()
+
+
+            if not source:
+
+                continue
+
+
+            if _is_internal_resource(
+                source,
+                hostname,
+                registered_domain
+            ):
+
+                internal_media += 1
+
+            else:
+
+                external_media += 1
+
+
+    total_media = (
+        internal_media
+        + external_media
     )
 
-    media_external = len(
-        media[
-            "externals"
-        ]
-    )
 
-    media_total = (
-        media_internal
-        + media_external
-    )
-
-    if media_total:
+    if total_media:
 
         ratio_int_media = (
-            media_internal
-            / media_total
+            internal_media
+            / total_media
             * 100
         )
 
         ratio_ext_media = (
-            media_external
-            / media_total
+            external_media
+            / total_media
             * 100
         )
 
@@ -1291,24 +1118,26 @@ def extract_webpage_features(
     # DOMAIN IN TITLE
     # ========================================================
 
-    domain = data[
-        "domain"
-    ]
-
-    title = (
-        data[
-            "title"
-        ]
-        or ""
+    title_tag = soup.find(
+        "title"
     )
 
-    # Dataset encoding:
-    #
-    # 0 = domain appears in title
-    # 1 = domain does NOT appear in title
+
+    if title_tag:
+
+        title = title_tag.get_text(
+            " ",
+            strip=True
+        )
+
+    else:
+
+        title = ""
+
 
     if (
-        domain.lower()
+        domain
+        and domain.lower()
         in title.lower()
     ):
 
@@ -1323,17 +1152,17 @@ def extract_webpage_features(
     # DOMAIN WITH COPYRIGHT
     # ========================================================
 
-    page_text = (
-        data[
-            "text"
-        ]
-        or ""
+    page_text = soup.get_text(
+        " ",
+        strip=True
     )
+
 
     copyright_symbol = re.search(
         r"[©™®]",
         page_text
     )
+
 
     if copyright_symbol:
 
@@ -1344,22 +1173,20 @@ def extract_webpage_features(
         )
 
         end = min(
-            len(
-                page_text
-            ),
+            len(page_text),
             copyright_symbol.start()
             + 50
         )
 
-        nearby_text = (
-            page_text[
-                start:
-                end
-            ]
-        )
+
+        nearby_text = page_text[
+            start:end
+        ]
+
 
         if (
-            domain.lower()
+            domain
+            and domain.lower()
             in nearby_text.lower()
         ):
 
@@ -1371,7 +1198,6 @@ def extract_webpage_features(
 
     else:
 
-        # This matches the original feature function.
         domain_with_copyright = 0
 
 
@@ -1411,19 +1237,13 @@ def extract_features(
     url
 ):
 
-    # --------------------------------------------------------
-    # NORMALIZE URL
-    # --------------------------------------------------------
-
+    # Normalize URL
     url = normalize_url(
         url
     )
 
 
-    # --------------------------------------------------------
-    # URL FEATURES
-    # --------------------------------------------------------
-
+    # URL-based features
     url_features = (
         extract_url_features(
             url
@@ -1431,19 +1251,13 @@ def extract_features(
     )
 
 
-    # --------------------------------------------------------
-    # DOWNLOAD ONLY THE MAIN WEBPAGE
-    # --------------------------------------------------------
-
+    # Download the webpage once
     html = _download_html(
         url
     )
 
 
-    # --------------------------------------------------------
-    # HTML FEATURES
-    # --------------------------------------------------------
-
+    # HTML-based features
     webpage_features = (
         extract_webpage_features(
             url,
@@ -1452,41 +1266,33 @@ def extract_features(
     )
 
 
-    # --------------------------------------------------------
-    # COMBINE
-    # --------------------------------------------------------
-
+    # Combine features
     features = {
         **url_features,
         **webpage_features
     }
 
 
-    # --------------------------------------------------------
-    # VERIFY ALL MODEL FEATURES EXIST
-    # --------------------------------------------------------
-
+    # Verify all 25 model features
     missing_features = [
         feature
         for feature in SELECTED_FEATURES
         if feature not in features
     ]
 
+
     if missing_features:
 
         raise FeatureExtractionError(
-            "Missing extracted features: "
+            "Missing features: "
             + ", ".join(
                 missing_features
             )
         )
 
 
-    # --------------------------------------------------------
-    # RETURN ONLY THE EXACT 25 MODEL FEATURES
-    # IN THE EXACT TRAINING ORDER
-    # --------------------------------------------------------
-
+    # Return ONLY the 25 features used
+    # by the Random Forest.
     return {
         feature:
             features[
