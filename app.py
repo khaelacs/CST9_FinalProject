@@ -1,5 +1,4 @@
 import os
-import time
 
 import joblib
 import pandas as pd
@@ -49,75 +48,113 @@ st.set_page_config(
 
 
 # ============================================================
-# DESIGN
+# CUSTOM DESIGN
 # ============================================================
 
 st.markdown(
     """
-    <style>
+<style>
 
-    .block-container {
-        max-width: 760px;
-        padding-top: 3rem;
-        padding-bottom: 3rem;
-    }
+.block-container {
+    max-width: 780px;
+    padding-top: 3rem;
+    padding-bottom: 3rem;
+}
 
-    .main-title {
-        text-align: center;
-        font-size: 42px;
-        font-weight: 800;
-        margin-bottom: 8px;
-    }
+/* HEADER */
 
-    .subtitle {
-        text-align: center;
-        font-size: 17px;
-        color: #8b8b8b;
-        margin-bottom: 35px;
-    }
+.main-title {
+    text-align: center;
+    font-size: 46px;
+    font-weight: 800;
+    margin-bottom: 5px;
+}
 
-    .result-safe {
-        background: rgba(34, 197, 94, 0.10);
-        border: 1px solid rgba(34, 197, 94, 0.45);
-        border-radius: 14px;
-        padding: 25px;
-        text-align: center;
-        margin-top: 20px;
-    }
+.subtitle {
+    text-align: center;
+    font-size: 18px;
+    color: #8b8b8b;
+    margin-bottom: 40px;
+}
 
-    .result-danger {
-        background: rgba(239, 68, 68, 0.10);
-        border: 1px solid rgba(239, 68, 68, 0.45);
-        border-radius: 14px;
-        padding: 25px;
-        text-align: center;
-        margin-top: 20px;
-    }
+/* INPUT */
 
-    .result-title {
-        font-size: 27px;
-        font-weight: 800;
-        margin-bottom: 8px;
-    }
+div[data-testid="stTextInput"] input {
+    font-size: 17px;
+    padding: 14px;
+    border-radius: 10px;
+}
 
-    .result-description {
-        font-size: 16px;
-    }
+/* BUTTON */
 
-    div[data-testid="stTextInput"] input {
-        font-size: 16px;
-        padding: 12px;
-    }
+div.stButton > button,
+div[data-testid="stFormSubmitButton"] > button {
+    height: 52px;
+    font-size: 17px;
+    font-weight: 700;
+    border-radius: 10px;
+}
 
-    div.stButton > button {
-        height: 50px;
-        font-size: 17px;
-        font-weight: 700;
-        border-radius: 10px;
-    }
+/* RESULT CARDS */
 
-    </style>
-    """,
+.safe-card {
+    background: rgba(34, 197, 94, 0.08);
+    border: 1px solid rgba(34, 197, 94, 0.45);
+    border-radius: 16px;
+    padding: 30px;
+    margin-top: 25px;
+}
+
+.danger-card {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.50);
+    border-radius: 16px;
+    padding: 30px;
+    margin-top: 25px;
+}
+
+.result-icon {
+    text-align: center;
+    font-size: 45px;
+    margin-bottom: 8px;
+}
+
+.result-title {
+    text-align: center;
+    font-size: 27px;
+    font-weight: 800;
+    margin-bottom: 12px;
+}
+
+.result-message {
+    text-align: center;
+    font-size: 16px;
+    line-height: 1.6;
+    color: #bdbdbd;
+}
+
+.advice-box {
+    margin-top: 20px;
+    padding: 18px;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.04);
+}
+
+.advice-title {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+
+.footer-text {
+    text-align: center;
+    font-size: 13px;
+    color: #777;
+    margin-top: 25px;
+}
+
+</style>
+""",
     unsafe_allow_html=True,
 )
 
@@ -133,8 +170,10 @@ def load_system():
         MODEL_FILE
     )
 
-    selected_features = joblib.load(
-        FEATURE_FILE
+    selected_features = list(
+        joblib.load(
+            FEATURE_FILE
+        )
     )
 
     threshold = float(
@@ -145,14 +184,18 @@ def load_system():
 
     return (
         model,
-        list(selected_features),
+        selected_features,
         threshold,
     )
 
 
 try:
 
-    model, selected_features, threshold = load_system()
+    (
+        model,
+        selected_features,
+        threshold
+    ) = load_system()
 
 except Exception:
 
@@ -165,26 +208,29 @@ except Exception:
 
 
 # ============================================================
-# INTERNAL VALIDATION
+# INTERNAL CHECK
 # ============================================================
 
 if set(selected_features) != set(SELECTED_FEATURES):
 
     st.error(
-        "The detector is currently unavailable. "
-        "Please contact the administrator."
+        "The detector is currently unavailable."
     )
 
     st.stop()
 
 
-if hasattr(model, "n_features_in_"):
+if hasattr(
+    model,
+    "n_features_in_"
+):
 
-    if model.n_features_in_ != len(selected_features):
+    if model.n_features_in_ != len(
+        selected_features
+    ):
 
         st.error(
-            "The detector is currently unavailable. "
-            "Please contact the administrator."
+            "The detector is currently unavailable."
         )
 
         st.stop()
@@ -196,20 +242,20 @@ if hasattr(model, "n_features_in_"):
 
 st.markdown(
     """
-    <div class="main-title">
-        🛡️ Phishing Website Detector
-    </div>
+<div class="main-title">
+🛡️ Phishing Website Detector
+</div>
 
-    <div class="subtitle">
-        Check a website link before you open or trust it.
-    </div>
-    """,
+<div class="subtitle">
+Check suspicious links before trusting them.
+</div>
+""",
     unsafe_allow_html=True,
 )
 
 
 # ============================================================
-# URL FORM
+# URL INPUT
 # ============================================================
 
 with st.form(
@@ -219,7 +265,7 @@ with st.form(
 
     url_input = st.text_input(
         "Website URL",
-        placeholder="Example: https://example.com",
+        placeholder="https://example.com",
     )
 
     analyze_button = st.form_submit_button(
@@ -230,7 +276,7 @@ with st.form(
 
 
 # ============================================================
-# ANALYZE
+# ANALYSIS
 # ============================================================
 
 if analyze_button:
@@ -243,6 +289,10 @@ if analyze_button:
 
         st.stop()
 
+
+    # --------------------------------------------------------
+    # NORMALIZE URL
+    # --------------------------------------------------------
 
     try:
 
@@ -260,13 +310,13 @@ if analyze_button:
 
 
     # --------------------------------------------------------
-    # FEATURE EXTRACTION
+    # EXTRACT FEATURES
     # --------------------------------------------------------
 
     try:
 
         with st.spinner(
-            "Checking the website..."
+            "Checking the link..."
         ):
 
             features = extract_features(
@@ -276,15 +326,15 @@ if analyze_button:
     except Exception:
 
         st.error(
-            "We couldn't analyze this URL. "
-            "Please check the link and try again."
+            "We couldn't analyze this link. "
+            "Please check the URL and try again."
         )
 
         st.stop()
 
 
     # --------------------------------------------------------
-    # PREPARE MODEL INPUT
+    # CREATE MODEL INPUT
     # --------------------------------------------------------
 
     try:
@@ -305,21 +355,20 @@ if analyze_button:
         if input_data.isnull().any().any():
 
             raise ValueError(
-                "Invalid feature value."
+                "Invalid input."
             )
 
     except Exception:
 
         st.error(
-            "We couldn't analyze this URL. "
-            "Please try another link."
+            "We couldn't analyze this link."
         )
 
         st.stop()
 
 
     # --------------------------------------------------------
-    # PREDICTION
+    # RANDOM FOREST PREDICTION
     # --------------------------------------------------------
 
     try:
@@ -351,93 +400,98 @@ if analyze_button:
     except Exception:
 
         st.error(
-            "Something went wrong while checking the URL. "
-            "Please try again."
+            "Something went wrong while checking "
+            "the link. Please try again."
         )
 
         st.stop()
 
 
     # ========================================================
-    # RESULT
+    # DISPLAY RESULT
     # ========================================================
 
     if prediction == 1:
 
         st.markdown(
             """
-            <div class="result-danger">
+<div class="danger-card">
 
-                <div class="result-title">
-                    ⚠️ Potential Phishing Website
-                </div>
+<div class="result-icon">⚠️</div>
 
-                <div class="result-description">
-                    This link shows characteristics commonly
-                    associated with phishing websites.
-                    Avoid entering passwords, payment details,
-                    or personal information.
-                </div>
+<div class="result-title">
+Potential Phishing Website
+</div>
 
-            </div>
-            """,
+<div class="result-message">
+This link shows characteristics commonly associated
+with phishing websites.
+</div>
+
+<div class="advice-box">
+
+<div class="advice-title">
+What should you do?
+</div>
+
+• Do not enter passwords or personal information.<br>
+• Do not provide payment or banking details.<br>
+• Verify the website address before continuing.<br>
+• If you received this link unexpectedly, avoid opening it.
+
+</div>
+
+</div>
+""",
             unsafe_allow_html=True,
         )
+
 
     else:
 
         st.markdown(
             """
-            <div class="result-safe">
+<div class="safe-card">
 
-                <div class="result-title">
-                    ✅ Likely Legitimate Website
-                </div>
+<div class="result-icon">✅</div>
 
-                <div class="result-description">
-                    This link does not show strong phishing
-                    characteristics based on the analysis.
-                </div>
+<div class="result-title">
+No Strong Phishing Signs Detected
+</div>
 
-            </div>
-            """,
+<div class="result-message">
+The link does not show strong characteristics commonly
+associated with phishing websites.
+</div>
+
+<div class="advice-box">
+
+<div class="advice-title">
+Stay cautious
+</div>
+
+• Make sure the website address is correct.<br>
+• Be careful when entering passwords or payment details.<br>
+• Avoid links received from unknown or suspicious sources.
+
+</div>
+
+</div>
+""",
             unsafe_allow_html=True,
         )
-
-
-    # ========================================================
-    # SIMPLE SCORE
-    # ========================================================
-
-    st.write("")
-
-    st.write(
-        "**Phishing likelihood**"
-    )
-
-    st.progress(
-        min(
-            max(
-                phishing_probability,
-                0.0
-            ),
-            1.0
-        )
-    )
-
-    st.caption(
-        f"{phishing_probability * 100:.1f}%"
-    )
 
 
 # ============================================================
 # FOOTER
 # ============================================================
 
-st.write("")
-st.divider()
-
-st.caption(
-    "Results are provided as a security screening aid. "
-    "Always be cautious with unfamiliar links."
+st.markdown(
+    """
+<div class="footer-text">
+This tool helps identify suspicious links but cannot guarantee
+that every website is safe.
+</div>
+""",
+    unsafe_allow_html=True,
 )
